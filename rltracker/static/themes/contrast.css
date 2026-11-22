@@ -1,0 +1,30 @@
+/* High Contrast: maximum legibility. Pure black and white, heavier lines,
+   bigger text, no faint greys, strong yellow focus rings. */
+@import url("rlcs.css");
+
+:root{
+  --bg:#000000; --panel:#000000; --panel2:#1a1a1a; --panel3:#333333;
+  --line:#8c8c8c; --line-hi:#ffffff;
+  --text:#ffffff; --muted:#e0e0e0; --dim:#c8c8c8;
+  --plate:#ffffff; --ink:#000000;
+  --blue:#4d94ff; --orange:#ff8a3d; --gold:#ffe14d;
+  --win:#3dff9e; --loss:#ff6b7d;
+  --c1:#ffffff; --c2:#5ce1ff; --c3:#ff7ac0; --c4:#b6ff4d; --c5:#ffe14d; --chart-grid:rgba(255,255,255,.25);
+}
+body{font-size:16.5px;background:#000}
+.card,.chips,.mbox{border-width:2px;border-color:#8c8c8c}
+th{background:#000;color:#fff;border-bottom:2px solid #fff}
+td{border-bottom-color:#5a5a5a;font-size:15.5px}
+.hint,.tile .sub{color:#e0e0e0;font-size:14px}
+.tile .label,.trio small,.rec .label{color:#ffffff}
+nav button{color:#e0e0e0}
+*:focus-visible{outline:3px solid #ffe14d !important;outline-offset:2px}
+input.e,select.e,textarea{background:#000;border:2px solid #fff}
+.plink{text-decoration-color:currentColor}
+.res{outline:2px solid #000}
+.sb-player{background:color-mix(in srgb,var(--c) 70%,#000 30%) !important}
+.sb-player.me{box-shadow:inset 0 0 0 3px #ffe14d !important}
+.sb-col,.sb-name small{color:#fff;opacity:1}
+.cmp s{background:#ffe14d}
+.wr span{text-shadow:0 0 3px #000,0 0 3px #000}
+body{background-image:none}

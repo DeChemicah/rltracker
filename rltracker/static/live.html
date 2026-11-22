@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RL Tracker · Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Barlow:wght@400;500;600&family=Saira:ital,wght@0,500;0,700;0,800;1,800;1,900&family=Saira+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<link id="themeCss" rel="stylesheet" href="/static/themes/rlcs.css">
+<link rel="stylesheet" href="/static/themes/common.css">
+<script>
+  // Same theme as the main app. This page only reads RL Tracker's own data
+  // from http://127.0.0.1 — it never looks at or touches the game.
+  (function(){ var t='rlcs'; try{ t = localStorage.getItem('rltracker.theme') || 'rlcs'; }catch(e){}
+    if (['rlcs','arena','light','contrast'].indexOf(t) < 0) t = 'rlcs';
+    document.documentElement.setAttribute('data-theme', t);
+    document.getElementById('themeCss').href = '/static/themes/' + t + '.css'; })();
+</script>
+<style>
+  body{margin:0;min-height:100vh}
+  header{display:none!important}
+  .live{padding:16px;display:flex;flex-direction:column;gap:12px}
+  .live .top{display:flex;align-items:center;gap:10px;font-family:var(--label,var(--display));font-weight:700;text-transform:uppercase;letter-spacing:1.5px;font-size:13px;color:var(--muted)}
+  .live .top .pulse{width:9px;height:9px;background:var(--win);box-shadow:0 0 10px var(--win)}
+  .live .top .pulse.off{background:var(--muted);box-shadow:none}
+  .rec{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .rec div{padding:14px 16px;color:#fff}
+  .rec .w{background:var(--blue)} .rec .l{background:var(--orange);text-align:right}
+  .rec b{display:block;font-family:var(--display);font-style:italic;font-weight:900;font-size:58px;line-height:1}
+  .rec small{font-family:var(--label,var(--display));font-weight:700;letter-spacing:2px;text-transform:uppercase}
+  .kv{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+  .kv .card{padding:10px 12px}
+  .kv .card b{display:block;font-family:var(--display);font-weight:800;font-size:24px}
+  .kv .card span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-family:var(--label,var(--display));font-weight:700}
+  .last{font-size:14px}
+  .games{display:flex;gap:4px;flex-wrap:wrap}
+  .games i{width:22px;height:22px;display:grid;place-items:center;font-style:normal;font-family:var(--display);font-weight:900;font-size:12px}
+  .games i.W{background:var(--win);color:#02140a} .games i.L{background:var(--loss);color:#1c0207}
+  .idle{padding:30px 16px;text-align:center;color:var(--muted)}
+  .gr{padding:14px}
+  .gr .head{display:flex;gap:14px;align-items:center}
+  .gr .head .res{font-family:var(--display);font-weight:800;font-size:22px}
+  .gr .head .sub{font-size:12px;color:var(--muted)}
+  .gr table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+  .gr td,.gr th{padding:4px 6px;text-align:right}.gr td:first-child,.gr th:first-child{text-align:left}
+  .gr th{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700}
+  .gr ul{margin:10px 0 0;padding-left:18px;font-size:13px}.gr li.up{color:var(--win)}.gr li.down{color:var(--loss)}
+  .gr .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .gr .chips span{font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;color:var(--muted)}
+  .gr .chips b{color:var(--text)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;align-items:start}
+</style>
+</head>
+<body>
+<div class="live" id="live"><div class="idle">Loading…</div></div>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const t = iso => new Date(iso).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+const LBL = {score:'Score', goals:'Goals', assists:'Assists', ball_hits:'Ball hits', saves:'Saves', shots:'Shots', demos:'Demos'};
+const badge = (g, cls='') => g ? `<span class="grade g-${g.letter[0]} ${cls}" title="${esc(g.word)} · ${g.pts}/100">${g.letter}</span>` : '';
+// how a game grade was made: vs usual at this game's pace · vs the others in the game · the result
+const partsLine = (P, vsWho) => P ? `<div class="chips" style="margin-top:6px">${[['usual','Stats vs usual'],['in_game',vsWho],['result','Result']]
+  .map(([k,l])=>`<span>${l} <b>${P[k] ?? '–'}</b></span>`).join('')}</div>` : '';
+// the most recent game, graded against your usual in the same mode
+function gameCard(g){
+  const rows = Object.keys(LBL).filter(k=>g.stats[k]).map(k=>[k, g.stats[k]]).map(([k,x])=>`<tr><td>${LBL[k]||k}</td><td><b>${x.v ?? '–'}</b></td><td class="hint">${x.usual==null?'–':(k==='score'?Math.round(x.usual):x.usual.toFixed(1))}</td>
+    <td class="${x.change>0?'up':x.change<0?'down':''}">${x.change==null?'–':(x.change>0?'+':'')+x.change+'%'}</td><td>${badge(x.grade,'sm')}</td></tr>`).join('');
+  const notes = g.notes.length ? `<ul>${g.notes.map(n=>`<li class="${n.kind}">${esc(n.text)}</li>`).join('')}</ul>` : '';
+  const chips = [g.score_share!=null && `<span>Share of team score <b>${g.score_share}%</b></span>`,
+    g.goal_part!=null && `<span>Goal participation <b>${Math.round(g.goal_part)}%</b></span>`,
+    g.difficulty && `<span>Lobby <b>${esc(g.difficulty.tier)}</b></span>`,
+    g.mates.length && `<span>With <b>${g.mates.map(esc).join(', ')}</b></span>`].filter(Boolean).join('');
+  return `<div class="card gr"><div class="head">${badge(g.grade,'big')}
+      <div><div class="sub">Last game report card · ${t(g.t)} · ${esc(g.playlist)}</div>
+        <div class="res ${g.result==='W'?'up':'down'}">${g.result==='W'?'Won':'Lost'} ${g.for ?? '?'}–${g.against ?? '?'}${g.overtime?' (OT)':''}</div>
+        <div class="sub">You · ${g.grade ? esc(g.grade.word) : 'not enough games to grade yet'}</div></div></div>
+    ${partsLine(g.grade_parts, 'vs this lobby')}
+    ${notes}
+    <table><tr><th>Stat</th><th>Game</th><th>Usual</th><th>Change</th><th></th></tr>${rows}</table>
+    <div class="chips">${chips}</div>
+    <div class="hint" style="margin-top:8px;font-size:11px">Grade = 45% your stats vs ${g.estimated ? 'an estimate of ' : ''}your usual in ${esc(g.playlist)}, scaled to how busy this game was (a tight, low-scoring game expects less) · 35% vs the other players in this game · 20% the result. 60 = about usual.${g.estimated ? ' Few earlier games in this mode.' : ''}</div></div>`;
+}
+// your whole team in the same game: team totals against your teams' usual in that mode
+function teamCard(T, g){
+  const rows = Object.keys(LBL).filter(k=>T.stats[k]).map(k=>[k, T.stats[k]]).map(([k,x])=>`<tr><td>${LBL[k]}</td><td><b>${x.v ?? '–'}</b></td><td class="hint">${x.usual==null?'–':(k==='score'?Math.round(x.usual):x.usual.toFixed(1))}</td>
+    <td class="${x.change>0?'up':x.change<0?'down':''}">${x.change==null?'–':(x.change>0?'+':'')+x.change+'%'}</td><td>${badge(x.grade,'sm')}</td></tr>`).join('');
+  const notes = T.notes.length ? `<ul>${T.notes.map(n=>`<li class="${n.kind}">${esc(n.text)}</li>`).join('')}</ul>` : '';
+  return `<div class="card gr"><div class="head">${badge(T.grade,'big')}
+      <div><div class="sub">Team report card · ${esc(g.playlist)}</div>
+        <div class="res">${T.players.map(esc).join(', ')}</div>
+        <div class="sub">Your team · ${T.grade ? esc(T.grade.word) : 'not enough games to grade yet'}</div></div></div>
+    ${partsLine(T.grade_parts, 'vs the other team')}
+    ${notes}
+    <table><tr><th>Team stat</th><th>Game</th><th>Usual</th><th>Change</th><th></th></tr>${rows}</table>
+    <div class="hint" style="margin-top:8px;font-size:11px">Grade = 45% your team's totals vs ${T.estimated ? 'an estimate of ' : ''}your teams' usual in ${esc(g.playlist)}, scaled to how busy this game was · 35% vs the other team · 20% the result.${T.estimated ? ' Few earlier games in this mode.' : ''}</div></div>`;
+}
+async function tick(){
+  try {
+    const d = await (await fetch('/api/live')).json();
+    const el = document.getElementById('live');
+    const s = d.session;
+    if (!s){ el.innerHTML = '<div class="idle">No games yet. Save the replay at the end of a match and it shows up here.</div>'; return; }
+    const last = s.rows[s.rows.length-1];
+    const a = s.my_avg;
+    el.innerHTML = `
+      <div class="top"><span class="pulse ${d.active?'':'off'}"></span>${d.active ? 'Session live' : 'Last session'} · ${esc(d.me||'')}
+        <span style="margin-left:auto">${t(s.start)} – ${t(s.end)}</span></div>
+      <div class="rec"><div class="w"><small>Wins</small><b>${s.wins}</b></div><div class="l"><small>Losses</small><b>${s.losses}</b></div></div>
+      <div class="kv">
+        <div class="card"><span>Avg score</span><b>${a.score==null ? "–" : Math.round(a.score)}</b></div>
+        <div class="card"><span>Goals ${s.goals_for}–${s.goals_against}</span><b class="${s.goals_for>=s.goals_against?'up':'down'}">${s.goals_for-s.goals_against>=0?'+':''}${s.goals_for-s.goals_against}</b></div>
+      </div>
+      <div class="games">${s.rows.map(r=>`<i class="${r.result}" title="${t(r.t)} ${r.for}–${r.against}">${r.result}</i>`).join('')}</div>
+      ${d.last_game ? `<div class="cards">${gameCard(d.last_game)}${d.last_team ? teamCard(d.last_team, d.last_game) : ''}</div>` : `<div class="card last"><span class="hint">Last game · ${t(last.t)}</span><br>
+        <b>${last.result==='W'?'Won':'Lost'} ${last.for ?? '?'}–${last.against ?? '?'}</b> · ${last.my.score} pts</div>`}
+      ${d.scanner && d.scanner.running ? '<div class="hint">Reading a new replay…</div>' : ''}`;
+  } catch (e) {
+    document.getElementById('live').innerHTML = '<div class="idle">RL Tracker isn\'t running.</div>';
+  }
+}
+tick(); setInterval(tick, 4000);
+</script>
+</body>
+</html>
