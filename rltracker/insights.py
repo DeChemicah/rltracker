@@ -485,7 +485,11 @@ def live(cutoff_min: int = 45) -> dict:
     if cur:
         active = (datetime.now() - datetime.fromisoformat(cur["end"])).total_seconds() < cutoff_min * 60
     games, *_ = load()
-    return {"me": data["me"], "active": active, "session": cur, "cutoff": cutoff_min,
+    nudge = None
+    if active and cur:
+        from . import patterns as PT
+        nudge = PT.live_warning(games, [m for m in games if m["played_at"] >= cur["start"]])
+    return {"me": data["me"], "active": active, "session": cur, "cutoff": cutoff_min, "nudge": nudge,
             "last_game": game_report(games[-1], games[:-1]) if games else None,
             "last_team": team_game_report(games[-1], games[:-1]) if games else None}
 
@@ -659,7 +663,7 @@ def dashboard(size="all", ranked="all", last=0, who="me", start="", end="", tag=
             e["games"] += 1
             e["wins"] += m["result"] == "W"
     rivals = sorted((e for e in opp.values() if e["games"] >= 2),
-                    key=lambda e: (-(e["games"] - e["wins"]), e["wins"] / e["games"], -e["games"]))
+                    key=lambda e: (-e["games"], -(e["games"] - e["wins"])))  # most games against first, then most losses
     for e in rivals:
         e["losses"] = e["games"] - e["wins"]
         e["win_rate"] = _rate(e["wins"], e["games"])
@@ -681,7 +685,10 @@ def dashboard(size="all", ranked="all", last=0, who="me", start="", end="", tag=
     replay["opp_heat"] = RP.encode_heat(RP.decode_heat(opp)[::-1, ::-1]) if opp else None
 
     replay["pads"] = pad_totals(rg)
-    return {"games": n, "series": rows, "factors": factors, "time": time, "efficiency": efficiency, "replay": replay,
+    from . import patterns as PT
+    time["detail"] = PT.time_detail(games)
+    return {"fatigue": PT.fatigue(games), "situations": PT.situations(games), "goal_timing": PT.goal_timing(games),
+            "games": n, "series": rows, "factors": factors, "time": time, "efficiency": efficiency, "replay": replay,
             "calendar": [{"date": d, **v} for d, v in sorted(calendar.items())], "rivals": rivals[:12],
             "win_conditions": win_conditions(rg), "clutch": clutch(games), "percentiles": percentiles(games),
             "difficulty": difficulty_summary(games), "consistency": consistency(games),
@@ -1134,8 +1141,27 @@ STAT_HELP = {
     "pct_off_third": "Share of time in your offensive third.", "pct_behind_ball": "Share of time between the ball and your goal.",
     "pct_last_back": "Share of time you were the furthest back on your team.", "pct_first_forward": "Share of time you were the furthest forward.",
     "avg_dist_ball": "Average distance from the ball.", "avg_dist_mate": "Average distance from your teammates.",
+    "pct_wall": "Share of time driving on a wall, corner or the ceiling.",
+    "fifty_fifties": "Touches while an opponent was also at the ball (kickoffs not counted).",
+    "fifty_wins": "50/50s where the ball went your team's way over the next second.",
+    "fifty_win_pct": "50/50s won ÷ 50/50s.",
+    "double_commits": "You and a teammate both went for the same ball and both got there, and you were the one who started going second. Each player's runs at the ball (close and driving straight at it) are tracked; estimated from positions.",
+    "whiffs": "Jumps or flips at the ball that got within reach of it without touching it.",
+    "air_whiffs": "Whiffs with the ball above ~3 m.",
+    "pct_whiff": "Whiffs ÷ jumps or flips that went for the ball.",
+    "rotation_cuts": "A teammate was already going for the ball, you went too and took it off them: cutting in front of the rotation.",
+    "pct_held_back": "When a teammate was already going for the ball and you started going too, how often you pulled out and let them have it. Higher = better rotation discipline.",
+    "giveaways": "Your touch in your own or the middle third (not a clear) that the other team picked up and kept.",
+    "recovery_s": "Average time it takes you to get back goal-side when the ball is in your half and you're caught in front of it.",
+    "touch_share": "Your share of your team's touches. Much above an even share can mean ball-chasing.",
+    "boost_def": "Your average boost at the moment the ball comes into your defensive third.",
+    "pct_first_man": "Share of time you were the closest on your team to the ball.",
+    "pct_second_man": "Share of time you were second closest to the ball.",
+    "pct_third_man": "Share of time you were furthest from the ball on your team (3v3).",
+    "passes": "Your touch followed by a teammate's touch within 3 s, with the ball moving 7 m or more and nobody else touching it.",
 }
-STAT_GROUP_NAMES = {"main": "Scoreboard", "boost": "Boost", "movement": "Movement", "demos": "Demos", "ball": "Ball", "positioning": "Positioning"}
+STAT_GROUP_NAMES = {"main": "Scoreboard", "boost": "Boost", "movement": "Movement", "demos": "Demos", "ball": "Ball", "positioning": "Positioning",
+                    "teamplay": "Team play"}
 
 
 def _stat_catalogue():
@@ -1151,6 +1177,8 @@ def _stat_catalogue():
             if k not in seen:
                 out.append((k, lab, g, "r"))
                 seen.add(k)
+            if k == "fifty_wins":
+                out.append(("fifty_win_pct", "50/50 win %", g, "ratio"))
     return out
 
 
@@ -1163,6 +1191,9 @@ def _stat_value(m: dict, p: dict, team: dict, key: str, src: str):
     if key == "shooting_pct":
         sh = p["stats"].get("shots")
         return round(100 * (p["stats"].get("goals") or 0) / sh, 1) if sh else None
+    if key == "fifty_win_pct":
+        r = p.get("rstats") or {}
+        return round(100 * (r.get("fifty_wins") or 0) / r["fifty_fifties"], 1) if r.get("fifty_fifties") else None
     if key == "goal_part":
         gp = stats.goal_participation([(p, team)])
         return gp["pct"] if gp else None
@@ -1175,6 +1206,10 @@ def _ratio_total(rows: list[tuple[dict, dict]], key: str):
         g = sum(p["stats"].get("goals") or 0 for p, _t in rows)
         sh = sum(p["stats"].get("shots") or 0 for p, _t in rows)
         return round(100 * g / sh, 1) if sh else None
+    if key == "fifty_win_pct":
+        w = sum((p.get("rstats") or {}).get("fifty_wins") or 0 for p, _t in rows)
+        n = sum((p.get("rstats") or {}).get("fifty_fifties") or 0 for p, _t in rows)
+        return round(100 * w / n, 1) if n else None
     gp = stats.goal_participation(rows)
     return gp["pct"] if gp else None
 
@@ -1440,7 +1475,8 @@ def teammate_impact(key: str, min_games: int = 2) -> dict | None:
     label = label_of(mine[-1][2], disp)
 
     def won(m, t):
-        return t.get("winner")
+        # the winner flag is only stored when orange wins, so use the same rule as everywhere else (flag, then final score)
+        return stats._result_for(m, m["teams"].index(t)) == "W"
 
     def summary(rows):
         n = len(rows)

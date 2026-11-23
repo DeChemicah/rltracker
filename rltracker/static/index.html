@@ -93,6 +93,20 @@ function render(){ charts.forEach(c=>c.destroy()); charts=[];
   if (FILTER_VIEWS[view]) ensureMeta().then(()=>{ if (state.view===view){ drawGbar(); run(); } });
   else { drawGbar(); run(); } }
 
+// redraw the current page in the background without jumping to the top: hold the page height while cards reload,
+// and put the scroll back where it was (stops as soon as you scroll yourself)
+function softRender(){
+  const y = window.scrollY, v = $('#view'); v.style.minHeight = v.offsetHeight + 'px';
+  render();
+  let moved = false; const mark = () => { moved = true; };
+  const evs = ['wheel','touchstart','keydown','mousedown']; evs.forEach(e => addEventListener(e, mark, {passive:true}));
+  const t0 = Date.now();
+  const tick = () => {
+    if (moved || Date.now() - t0 > 5000){ v.style.minHeight = ''; evs.forEach(e => removeEventListener(e, mark)); return; }
+    if (Math.abs(window.scrollY - y) > 2) window.scrollTo(0, y);
+    requestAnimationFrame(tick); };
+  tick();
+}
 function who(p){ const k = p.key; return p.alias ? `<b>${P(k, p.alias)}</b> <span class="hint">${esc(p.name)}</span>` : P(k, p.name); }
 function resultBadge(r){ return `<span class="res ${r||'n'}">${r||'–'}</span>`; }
 function scoreLine(row){
@@ -340,7 +354,7 @@ function teamInsights(t, lab){
 
 // ------------------------------------------------------------------ full game log
 async function openGame(id){
-  const [m] = await Promise.all([api(`/api/match/${id}`), rsMeta()]);
+  const [m] = await Promise.all([api(`/api/match/${id}`), rsMeta(), statTable().catch(()=>null)]);
   const box = $('#mbox');
   const two = m.teams.length === 2;
   const mi = m.my_index ? m.my_index[0] : 0;
@@ -685,7 +699,7 @@ async function renderSessions(reuse){
   const top = `<div class="filters">
       <label class="inl">New session after a gap of <input class="e" id="cutoff" value="${d.cutoff}" style="width:56px"> minutes</label>
       <button class="btn" id="saveCutoff">Apply</button><div class="spacer"></div>
-      <button class="btn pri" id="openLive">Open live window</button></div>`;
+      <button class="btn" id="openWeek">Weekly recap</button><button class="btn pri" id="openLive">Open live window</button></div>`;
   if (!d.sessions.length){ v.innerHTML = top + `<div class="card empty">No finished games yet.</div>`; bindSessions(d); return; }
   v.innerHTML = top + d.sessions.map((s,i)=>{
     const open = S.open.has(i);
@@ -765,6 +779,7 @@ function teamReportCard(s){
 function bindSessions(d){
   $('#saveCutoff').onclick = async ()=>{ await api('/api/settings',{method:'PUT',body:JSON.stringify({session_cutoff_min:+$('#cutoff').value||45})}); renderSessions(); };
   $('#openLive').onclick = openLive;
+  if ($('#openWeek')) $('#openWeek').onclick = ()=>openWeekReport();
   document.querySelectorAll('[data-sess]').forEach(h=>h.onclick=()=>{ const i=+h.dataset.sess; S.open.has(i)?S.open.delete(i):S.open.add(i); renderSessions(true); });
   document.querySelectorAll('[data-sreport]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); openSessionReport(d.sessions[+b.dataset.sreport]); });
   document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async e=>{ e.stopPropagation();
@@ -804,17 +819,29 @@ async function loadSessShots(s, i){
 }
 // ---- session report: what to improve, for the team and for each player (generated from the session's games)
 const SREP = new Map();
-async function openSessionReport(s){
-  const key = s.start + '|' + s.end, box = $('#mbox');
-  box.innerHTML = `<div class="row"><h3 style="margin:0">Session report</h3><div class="spacer"></div><button class="btn" id="srClose">Close</button></div>
-    <div class="card" style="margin-top:12px"><div class="hint">Working through ${s.games} games… this takes a few seconds.</div></div>`;
+function openSessionReport(s){
+  return openReport(`/api/session_report?start=${encodeURIComponent(s.start)}&end=${encodeURIComponent(s.end)}`, 'Session report', `Working through ${s.games} games…`);
+}
+function openWeekReport(day=''){ return openReport(`/api/week_report?day=${encodeURIComponent(day)}`, 'Weekly recap', 'Working through the week…'); }
+async function openReport(url, name, wait){
+  const key = url, box = $('#mbox');
+  box.innerHTML = `<div class="row"><h3 style="margin:0">${name}</h3><div class="spacer"></div><button class="btn" id="srClose">Close</button></div>
+    <div class="card" style="margin-top:12px"><div class="hint">${wait} this takes a few seconds.</div></div>`;
   $('#modal').classList.add('on'); $('#modal').scrollTop = 0; $('#srClose').onclick = closeModal;
-  if (!SREP.has(key)) SREP.set(key, api(`/api/session_report?start=${encodeURIComponent(s.start)}&end=${encodeURIComponent(s.end)}`));
+  if (!SREP.has(key)) SREP.set(key, api(url));
   let r; try { r = await SREP.get(key); } catch(e){ SREP.delete(key); box.querySelector('.card').innerHTML = '<div class="bad">Could not build the report. Restart RL Tracker if it was just updated.</div>'; return; }
   if (!$('#modal').classList.contains('on')) return;
-  if (!r.games){ box.querySelector('.card').innerHTML = '<div class="hint">No games in this session.</div>'; return; }
+  const W = r.kind === 'week' ? r.week : null;
+  const lastDay = iso => { const d = new Date(iso); return fmtDay(d.toISOString()); };
+  const wkNav = W ? `<button class="btn sm" id="wkPrev" title="Previous week">◀</button><button class="btn sm" id="wkNext" title="Next week" ${W.is_current?'disabled':''}>▶</button>` : '';
+  const bindWk = () => { if (!W) return; $('#wkPrev').onclick = ()=>openWeekReport(W.prev_start); if (!W.is_current) $('#wkNext').onclick = ()=>openWeekReport(W.next_start); };
+  if (!r.games){
+    box.innerHTML = `<div class="row"><h3 style="margin:0">${name}${W ? ` · ${fmtDay(W.start)} – ${lastDay(W.end)}` : ''}</h3><div class="spacer"></div>${wkNav}<button class="btn" id="srClose">Close</button></div>
+      <div class="card" style="margin-top:12px"><div class="hint">No games ${W ? 'this week' : 'in this session'}.</div></div>`;
+    $('#srClose').onclick = closeModal; bindWk(); return;
+  }
   const strip = r.results.map(g=>`<span class="fdot ${g.r==='W'?'w':'l'} click" data-id="${g.id}" title="${g.for ?? '?'}–${g.against ?? '?'}">${g.r}</span>`).join('');
-  const caveat = r.thin_modes.length ? `<div class="srnote"><b>How to read the grades.</b> There were few earlier ${r.thin_modes.map(esc).join(' / ')} games before this session, so "your usual" in that mode is estimated. The findings below compare the session with itself, the other team and the lobby instead.</div>` : '';
+  const caveat = r.thin_modes.length ? `<div class="srnote"><b>How to read the grades.</b> There were few earlier ${r.thin_modes.map(esc).join(' / ')} games before this ${W ? "week" : "session"}, so "your usual" in that mode is estimated. The findings below compare the ${W ? "week" : "session"} with itself, the other team and the lobby instead.</div>` : '';
   const facts = f => f.facts.map(x=>`<span class="srfact ${x.kind}">${esc(x.label)}: <b>${esc(x.value)}</b></span>`).join('');
   const finding = f => `<article class="srfix"><div class="srrank">${f.rank}</div><div>
       <h3>${esc(f.title)}</h3><div class="srfacts">${facts(f)}</div><p class="hint">${esc(f.text)}</p>
@@ -826,7 +853,18 @@ async function openSessionReport(s){
   const tiers = T.tiers.filter(t=>t.games).map(t=>`<div class="srtier"><span>${esc(t.tier)}</span><div class="track"><i style="width:${t.win_rate}%;background:${tierCol(t.tier)}"></i></div><span>${t.wins}–${t.losses}</span></div>`).join('');
   const wc = T.win_conditions.length ? `<div class="card" style="margin-top:12px"><h3>What went with winning</h3><table>${T.win_conditions.map(w=>`<tr><td class="l">${esc(w.label)}</td><td><b>${esc(w.value)}</b></td></tr>`).join('')}</table>
       <div class="hint" style="margin-top:6px">The split that best separated wins from losses in this session, for each stat. It shows what went with winning, not proof of cause.</div></div>` : '';
-  const teamPane = `<h3 class="sect">What to work on, most important first</h3>${list(T.findings, 'Nothing stood out as a clear problem for the team this session.')}
+  const pv = r.prev;
+  const fmtVs = x => x.pct_unit ? pct(x.v) : num(x.v, Math.abs(x.v) >= 100 ? 0 : 2);
+  const weekCard = W ? `<div class="card" style="margin-bottom:12px"><h3>This week vs last week</h3>
+      <div class="srfacts">
+        <span class="srfact">This week: <b>${r.wins}–${r.losses}</b> (${pct(100*r.wins/r.games)}) over ${r.sessions} session${r.sessions===1?'':'s'}</span>
+        ${pv ? `<span class="srfact ${r.wins/r.games >= pv.wins/pv.games ? 'up' : 'down'}">Last week: <b>${pv.wins}–${pv.losses}</b> (${pct(pv.win_rate)})</span>
+        <span class="srfact">Goals: <b>${r.goals_for}–${r.goals_against}</b> this week, ${pv.goals_for}–${pv.goals_against} last week</span>` : '<span class="srfact">No games last week to compare with.</span>'}</div>
+      ${r.vs_last_week.length ? `<table class="wkvs" style="margin-top:10px"><tr><th class="l">${isMe()?'You':'Stat'}</th><th>This week</th><th>Last week</th></tr>
+        ${r.vs_last_week.map(x=>`<tr><td class="l">${esc(x.label)}</td><td class="${x.better===true?'better':x.better===false?'worse':''}"><b>${fmtVs({v:x.this, pct_unit:x.pct_unit})}</b></td><td class="hint">${fmtVs({v:x.last, pct_unit:x.pct_unit})}</td></tr>`).join('')}</table>
+        <div class="hint" style="margin-top:6px">Your averages per game. Green = better than last week, red = worse.</div>` : ''}
+      ${r.days.length > 1 ? `<div class="hint" style="margin-top:8px">By day: ${r.days.map(d=>`${fmtDay(d.date+'T12:00:00')} ${d.wins}–${d.losses}`).join(' · ')}</div>` : ''}</div>` : '';
+  const teamPane = weekCard + `<h3 class="sect">What to work on, most important first</h3>${list(T.findings, 'Nothing stood out as a clear problem for the team this session.')}
     ${well(T.went_well)}
     <div class="grid two" style="margin-top:12px">${T.by_minute.length ? minuteDiffHtml(T.by_minute, r.games) : ''}
       ${tiers ? `<div class="card" style="margin-top:12px"><h3>Win rate by lobby strength</h3>${tiers}<div class="hint" style="margin-top:8px">One-goal games ${T.clutch.close.wins}–${T.clutch.close.losses} · overtime ${T.clutch.overtime.wins}–${T.clutch.overtime.losses}</div></div>` : ''}</div>
@@ -840,12 +878,13 @@ async function openSessionReport(s){
         <td>${x.pct==null ? '–' : `<div class="pwrap"><div class="pbar"><i class="${pbarCls(x)}" style="width:${x.pct}%"></i></div><span>${x.pct}${ordSuffix(x.pct)}</span></div>`}</td></tr>`).join('')}
     </table></div><div class="hint" style="margin-top:6px">"Usual" = this player's other games. Percentile bars: green = good for this stat, red = bad (for stats where lower is better, a low rank is green).</div></div>`;
   const panes = [['team','Team', teamPane], ...r.players.map(p=>[`p_${p.key}`, p.key==='me' ? `${esc(p.label)} (you)` : esc(p.label), playerPane(p)])];
-  box.innerHTML = `<div class="row"><div><h3 style="margin:0">Session report · ${fmtDay(r.start)} ${fmtTime(r.start)} – ${fmtTime(r.end)}</h3>
-      <div class="hint">${r.games} games · ${Object.entries(r.modes).map(([m,n])=>`${esc(m)} × ${n}`).join(', ')} · ${Math.floor(r.minutes/60)} h ${r.minutes%60} min · goals ${r.goals_for}–${r.goals_against}${r.difficulty!=null?` · lobbies ${num(r.difficulty,0)} on average`:''}</div></div>
-      <div class="spacer"></div><div class="srrec"><span class="up">${r.wins}W</span> – <span class="down">${r.losses}L</span></div><button class="btn" id="srClose">Close</button></div>
+  const title = W ? `Weekly recap · ${fmtDay(W.start)} – ${lastDay(W.end)}` : `Session report · ${fmtDay(r.start)} ${fmtTime(r.start)} – ${fmtTime(r.end)}`;
+  box.innerHTML = `<div class="row"><div><h3 style="margin:0">${title}</h3>
+      <div class="hint">${r.games} games · ${Object.entries(r.modes).map(([m,n])=>`${esc(m)} × ${n}`).join(', ')} · ${W ? `${r.sessions} session${r.sessions===1?'':'s'}` : `${Math.floor(r.minutes/60)} h ${r.minutes%60} min`} · goals ${r.goals_for}–${r.goals_against}${r.difficulty!=null?` · lobbies ${num(r.difficulty,0)} on average`:''}</div></div>
+      <div class="spacer"></div><div class="srrec"><span class="up">${r.wins}W</span> – <span class="down">${r.losses}L</span></div>${wkNav}<button class="btn" id="srClose">Close</button></div>
     <div class="form" style="margin:10px 0">${strip}</div>${caveat}
     ${tabsHtml('sr', panes, 'team')}`;
-  $('#srClose').onclick = closeModal;
+  $('#srClose').onclick = closeModal; bindWk();
   bindTabs(box, 'sr');
   box.querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>openGame(+el.dataset.id));
 }
@@ -875,12 +914,12 @@ async function renderDashExtras(){
     <h3 class="sect">Boost &amp; movement</h3>
     <div class="card">${dashReplayHtml(d.replay)}</div>`) + sec('heat', 'Heatmap', dashHeatHtml(d.replay)) + sec('pads', 'Boost pickup map', dashPadsHtml(d.replay && d.replay.pads)) + sec('winconds', 'Win conditions', winCondHtml(d.win_conditions)) + sec('factors', 'What decides games', `
     <h3 class="sect">What decides ${isMe()?'your':esc(yourW())} games</h3>
-    <div class="grid fgrid">${d.factors.map(factorCard).join('')}</div>`) + sec('clutch', 'Close games & clutch', clutchHtml(d.clutch))
+    <div class="grid fgrid">${d.factors.map(factorCard).join('')}</div>`) + sec('clutch', 'Close games & clutch', clutchHtml(d.clutch, d.situations))
    
     + sec('style', 'Play style radar', dashStyleHtml(d.style)) + sec('difficulty', 'Lobby difficulty', difficultyHtml(d.difficulty))
-    + sec('consistency', 'Consistency', consistencyHtml(d.consistency)) + sec('tags', 'Tags', tagsHtml(d.tags)) + sec('when', 'When you play', `
-    <h3 class="sect">When ${isMe()?'you play':esc(state.whoName)+' plays'}</h3>
-    <div class="grid two" style="margin-top:0">${factorCard(d.time.hours)}${factorCard(d.time.days)}</div>`) + sec('calendar', 'Calendar', `
+    + DG_CARDS.map(id=>sec(id, DASH_TITLES[id], `<div id="dg_${id}"><h3 class="sect">${esc(DASH_TITLES[id])}</h3><div class="card"><div class="hint">Working it out…</div></div></div>`)).join('')
+    + sec('fatigue', 'Fatigue & tilt', fatigueHtml(d.fatigue)) + sec('goaltiming', 'When goals happen', goalTimingHtml(d.goal_timing))
+    + sec('consistency', 'Consistency', consistencyHtml(d.consistency)) + sec('tags', 'Tags', tagsHtml(d.tags)) + sec('when', 'When you play', whenHtml(d.time)) + sec('calendar', 'Calendar', `
     <h3 class="sect">Calendar</h3>
     <div class="card">${calendarHtml(d.calendar)}</div>`) + sec('rivals', 'Rivals', `
     <h3 class="sect">Rivals</h3>
@@ -888,6 +927,7 @@ async function renderDashExtras(){
       ${d.rivals.map(r=>`<tr><td class="nm">${P(r.key, r.label)}</td><td>${r.games}</td><td><span class="up">${r.wins}W</span> – <span class="down">${r.losses}L</span></td><td style="width:35%">${wrBar(r.win_rate, r.games)}</td></tr>`).join('')}</table>`
       : '<div class="hint">Nobody has shown up against you twice yet.</div>'}</div>`);
   applyDashLayout();
+  renderDiagnosis();
   drawDashPads(d.replay && d.replay.pads);
   drawHeats($('#view'));
   drawConsistency(d.consistency);
@@ -932,7 +972,7 @@ function minuteDiffHtml(rows, games){
     ${body}
     <div class="hint" style="margin-top:6px">Goals scored and conceded in each minute of the 5:00 game clock (a goal at 0:00 counts in the last minute), across ${games} game${games===1?'':'s'} with a replay.</div></div>`;
 }
-function clutchHtml(c){
+function clutchHtml(c, sit){
   const head = `<h3 class="sect">Close games &amp; clutch</h3>`;
   if (!c || !c.games) return head + `<div class="card"><div class="hint">No finished games here yet.</div></div>`;
   const rec = (lab, r, sub='') => `<div class="card tile"><div class="label">${lab}</div><div class="val">${r.games ? `${r.wins}–${r.losses}` : '–'}</div>
@@ -947,8 +987,375 @@ function clutchHtml(c){
       ${tl ? tile('Comebacks', `${c.comebacks} / ${c.trailed.games}`, `won after being behind · ${c.blown} lead${c.blown===1?'':'s'} lost of ${c.led.games}`) : ''}
       ${tl ? tile('Last-minute goals', `${c.late_for}–${c.late_against}`, 'for – against, in the last 60 s of regulation') : ''}
       ${tl ? tile(isMe()?'Your clutch goals':esc(yourW())+' clutch goals', c.my_clutch_goals, `equalisers or go-ahead goals in the last minute or OT${c.my_ot_goals?` · ${c.my_ot_goals} OT winner${c.my_ot_goals>1?'s':''}`:''}`) : ''}
-    </div>${tl && c.by_minute ? minuteDiffHtml(c.by_minute, tl) : ''}${cl ? `<div class="card" style="margin-top:12px"><h3>Clutch goals</h3>${cl}</div>` : ''}
+    </div>${sit && sit.rows.length ? situationsHtml(sit) : ''}${tl && c.by_minute ? minuteDiffHtml(c.by_minute, tl) : ''}${cl ? `<div class="card" style="margin-top:12px"><h3>Clutch goals</h3>${cl}</div>` : ''}
     <div class="hint" style="margin-top:8px">One-goal and 3+ goal games use every finished game (${c.games}). Everything about the order of goals needs a replay (${tl} game${tl===1?'':'s'}).</div>`;
+}
+// ---- patterns: the score situation, when goals happen, fatigue and tilt, time of day
+const gdTxt = v => v==null ? '–' : `<span class="${v>0?'up':v<0?'down':''}">${v>0?'+':''}${num(v,2)}</span>`;
+const relTxt = v => v==null ? '–' : `<span class="${v>=3?'up':v<=-3?'down':''}">${v>0?'+':''}${Math.round(v)}%</span>`;
+// the clock hours behind each time-of-day bucket (same as HOUR_BUCKETS in insights.py)
+const HOUR_SPAN = { 'Morning':'6 AM – 12 PM', 'Afternoon':'12 – 5 PM', 'Evening':'5 – 10 PM', 'Late night':'10 PM – 2 AM', 'After 2 AM':'2 – 6 AM' };
+function patTable(rows, first='When', extra=true){
+  return `<table class="ftable pat"><tr><th class="l">${first}</th><th>Record</th><th style="width:38%">Win rate</th><th title="Average goal difference per game">Goal diff</th>${extra?'<th title="Your score compared with your usual score in that mode">Score vs usual</th>':''}</tr>
+    ${rows.map(r=>`<tr><td class="l">${esc(r.label)}${HOUR_SPAN[r.label] ? ` <span class="hint small">${HOUR_SPAN[r.label]}</span>` : ''}</td><td>${r.wins}–${r.losses}</td><td>${wrBar(r.win_rate, r.games)}</td><td>${gdTxt(r.gd)}</td>${extra?`<td>${relTxt(r.score_vs_usual)}</td>`:''}</tr>`).join('')}</table>`;
+}
+function situationsHtml(s){
+  const led = s.led_last_minute;
+  return `<div class="card" style="margin-top:12px"><h3>From each score situation</h3>${patTable(s.rows, 'At some point', false)}
+    <div class="srfacts" style="margin-top:8px">
+      ${led.games ? `<span class="srfact up">Ahead in the last minute: <b>${led.wins}–${led.losses}</b></span>` : ''}
+      <span class="srfact ${s.late_equalisers_against>s.late_equalisers_for?'down':''}">Last-minute equalisers: <b>${s.late_equalisers_for} for – ${s.late_equalisers_against} against</b></span>
+      ${s.overtime.games ? `<span class="srfact">Overtime: <b>${s.overtime.wins}–${s.overtime.losses}</b></span>` : ''}</div>
+    <div class="hint" style="margin-top:6px">Each game counts once for every situation it passed through, so a 2–1 comeback win counts under "Behind by 1" and "Ahead by 1". From the goal order in ${s.games} replay game${s.games===1?'':'s'}.</div></div>`;
+}
+function goalTimingHtml(g){
+  const head = `<h3 class="sect">When goals happen</h3>`;
+  if (!g || !g.games) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const max = Math.max(1, ...g.windows.map(w=>Math.max(w.for, w.against)), ...g.since_kickoff.map(w=>Math.max(w.for, w.against)));
+  const row = w => { const d = w.for - w.against;
+    return `<div class="md-row"><div class="md-lab gt-lab">${esc(w.label)}</div><div class="md-n">${w.against}</div>
+      <div class="gt-bar l"><i style="width:${100*w.against/max}%"></i></div><div class="md-mid"></div><div class="gt-bar r"><i style="width:${100*w.for/max}%"></i></div>
+      <div class="md-n">${w.for}</div><div class="md-diff ${d>0?'up':d<0?'down':''}">${d>0?'+':''}${d}</div></div>`; };
+  const hd = `<div class="md-row md-head"><div class="md-lab gt-lab"></div><div class="md-n"></div><div style="flex:1;text-align:right">Against</div><div class="md-mid"></div><div style="flex:1">For</div><div class="md-n"></div><div class="md-diff">+/-</div></div>`;
+  const worst = [...g.windows].sort((a,b)=>a.diff-b.diff)[0];
+  return head + `<div class="grid two" style="margin-top:0">
+      <div class="card"><h3>Key moments</h3>${hd}${g.windows.map(row).join('')}
+        ${worst && worst.diff < 0 ? `<div class="srnote" style="margin-top:10px"><b>${esc(worst.label)}</b> is where the team loses the most goals (${worst.for}–${worst.against}).</div>` : ''}</div>
+      <div class="card"><h3>Time since the last kickoff</h3>${hd}${g.since_kickoff.map(row).join('')}</div></div>
+    <div class="hint" style="margin-top:8px">${g.total.for} goals for and ${g.total.against} against in ${g.games} replay game${g.games===1?'':'s'}. Timed on the game clock, so goal replays and kickoff countdowns don't count. A goal can be in more than one key moment.</div>`;
+}
+function fatigueHtml(f){
+  const head = `<h3 class="sect">Fatigue &amp; tilt</h3>`;
+  if (!f || f.games < 6) return head + `<div class="card"><div class="hint">Needs a few more sessions.</div></div>`;
+  const warn = f.warnings.length ? f.warnings.map(w=>`<div class="srnote"><b>${esc(w.text)}</b> ${esc(w.tip)}</div>`).join('')
+    : `<div class="srnote" style="border-left-color:var(--win)">No clear fatigue or tilt pattern yet: results hold up through long sessions and after losses.</div>`;
+  return head + warn + `<div class="grid two" style="margin-top:10px">
+      <div class="card"><h3>By game number in the session</h3>${patTable(f.by_game_no, 'Game')}</div>
+      <div class="card"><h3>Right after…</h3>${patTable(f.after, 'Situation')}</div>
+      <div class="card"><h3>By how long the session has run</h3>${patTable(f.by_length, 'Time in')}</div></div>
+    <div class="hint" style="margin-top:8px">${f.games} games over ${f.sessions} session${f.sessions===1?'':'s'} (a new session starts after a 45-minute gap). A warning needs at least 4 games in that row of the table. The live window shows them while you play.</div>`;
+}
+function whenHtml(t){
+  const head = `<h3 class="sect">When ${isMe()?'you play':esc(state.whoName)+' plays'}</h3>`;
+  const D = t.detail;
+  if (!D) return head;
+  const g = D.grid;
+  const shade = r => r>=50 ? `color-mix(in srgb, var(--win) ${Math.min(32, 8+(r-50)*0.6)}%, transparent)` : `color-mix(in srgb, var(--loss) ${Math.min(32, 8+(50-r)*0.6)}%, transparent)`;
+  const cell = c => !c ? '<td class="hint">–</td>' : `<td class="hm" style="background:${shade(c.win_rate)}" title="${c.games} games">${Math.round(c.win_rate)}%<small>${c.games} g</small></td>`;
+  const grid = g.rows.length > 1 || g.cols.length > 1 ? `<div class="card" style="margin-top:12px"><h3>Day × time of day (win rate)</h3><div style="overflow-x:auto"><table class="hmgrid">
+      <tr><th></th>${g.cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr>
+      ${g.rows.map(d=>`<tr><th class="l">${esc(d)}</th>${g.cols.map(c=>cell(g.cells[d+'|'+c])).join('')}</tr>`).join('')}</table></div></div>` : '';
+  return head + `<div class="grid two" style="margin-top:0">
+      <div class="card"><h3>Time of day</h3>${patTable(D.hours, 'Time')}</div>
+      <div class="card"><h3>Day of week</h3>${patTable(D.days, 'Day')}</div></div>${grid}
+    <div class="hint" style="margin-top:8px">Times are your computer's local time. "Score vs usual" compares the score with the usual score in the same mode.</div>`;
+}
+// ---- why goals happen: goal causes and kinds, xG, team-play habits, roles, giveaway map (from /api/diagnosis)
+const DG_CARDS = ['changes','conceded','scored','xg','defending','challenges','teamplay','cutmap','scorestate','mechanics','passing','roles','kickspawn','giveaways','demos','opponents'];
+const DG = { give: 'me' };
+async function renderDiagnosis(){
+  const vis = DG_CARDS.filter(id=>{ const c = document.querySelector(`[data-card="${id}"]`); return c && c.style.display !== 'none'; });
+  if (!vis.length) return;
+  let d; try { d = await api(`/api/diagnosis?${dashQ()}`); } catch(e){ DG_CARDS.forEach(id=>{ const el = $('#dg_'+id); if (el) el.innerHTML = '<div class="card"><div class="bad">Could not load this. Restart RL Tracker if it was just updated.</div></div>'; }); return; }
+  if (state.view !== 'stats') return;
+  DG.d = d;
+  const put = (id, html) => { const el = $('#dg_'+id); if (el) el.innerHTML = html; };
+  put('conceded', concededHtml(d.goals)); put('scored', scoredHtml(d.goals)); put('xg', xgHtml(d.xg));
+  put('teamplay', teamPlayHtml(d.team)); put('roles', rolesHtml(d.team)); put('giveaways', givesHtml(d.team));
+  put('cutmap', cutMapHtml(d.rotation)); put('scorestate', scoreStateHtml(d.rotation)); put('mechanics', mechanicsHtml(d.mechanics));
+  put('kickspawn', kickSpawnHtml(d.kickoffs)); put('defending', defendingHtml(d.defending)); put('opponents', opponentsHtml(d.opponents));
+  put('changes', changesHtml(d.changes));
+  put('challenges', challengesHtml(d.challenges)); put('demos', demosHtml(d.demos)); put('passing', passingHtml(d.passing));
+  bindDiagnosis();
+}
+function bindDiagnosis(){
+  document.querySelectorAll('#dg_conceded [data-gid], #dg_xg [data-gid]').forEach(el=>el.onclick=()=>openGame(+el.dataset.gid));
+  document.querySelectorAll('#dg_demos [data-demo]').forEach(b=>b.onclick=()=>{ DG.demo = b.dataset.demo; $('#dg_demos').innerHTML = demosHtml(DG.d.demos); bindDiagnosis(); });
+  document.querySelectorAll('#dg_giveaways [data-give]').forEach(b=>b.onclick=()=>{ DG.give = b.dataset.give; $('#dg_giveaways').innerHTML = givesHtml(DG.d.team); bindDiagnosis(); });
+}
+const hbar = (v, max, cls='') => `<div class="hb ${cls}"><i style="width:${max ? Math.max(2, 100*v/max) : 0}%"></i></div>`;
+function concededHtml(g){
+  const head = `<h3 class="sect">How you get scored on</h3>`;
+  if (!g || !g.against) return head + `<div class="card"><div class="hint">Needs games with a replay and goals against.</div></div>`;
+  const max = Math.max(...g.causes.map(c=>c.goals), 1);
+  const top = g.causes.filter(c=>c.key!=='other').sort((a,b)=>b.goals-a.goals)[0];
+  const rows = g.causes.map(c=>`<tr><td class="l">${esc(c.label)}</td><td style="width:45%">${hbar(c.goals, max, c.key==='other'?'n':'b')}</td><td><b>${c.goals}</b></td><td class="hint">${pct(c.pct)}</td>
+      <td class="hint" title="Goals where this played a part, as the main cause or alongside another">${c.any > c.goals ? `part of ${c.any}` : ''}</td></tr>`).join('');
+  const inv = g.involved.filter(p=>p.goals).map(p=>`<tr><td class="l"><b>${esc(p.label)}</b></td><td><b>${p.goals}</b></td>
+      <td class="l hint">${p.by.slice(0,3).map(b=>`${esc(b.label)} ${b.goals}`).join(' · ')}</td></tr>`).join('');
+  const rec = g.recent.map(r=>`<tr class="click" data-gid="${r.id}"><td class="l hint">${fmtDate(r.t)}</td><td>${r.clock!=null?shotClock(r.clock):''}</td>
+      <td class="l"><b>${esc(r.label)}</b>${r.also.length?`<div class="hint small">also: ${r.also.map(esc).join(', ')}</div>`:''}</td><td class="l">${r.who.map(esc).join(', ') || '<span class="hint">–</span>'}</td><td>${resultBadge(r.result)}</td></tr>`).join('');
+  return head + `${top ? `<div class="srnote"><b>Biggest fixable leak: ${esc(top.label.toLowerCase())}</b>, ${top.goals} of ${g.against} goals against (${pct(top.pct)}).</div>` : ''}
+    <div class="grid two" style="margin-top:10px">
+      <div class="card"><h3>Main cause of each goal against</h3><table class="ftable">${rows}</table></div>
+      <div class="card"><h3>Who was involved</h3>${inv ? `<table class="ftable"><tr><th class="l">Player</th><th>Goals</th><th class="l">Mostly</th></tr>${inv}</table>` : '<div class="hint">Nobody singled out yet.</div>'}
+        <div class="hint" style="margin-top:6px">Involved = the player who gave it away, made the second commit, was demoed, last touched it before the rebound or was the last defender on low boost.</div></div></div>
+    <div class="card" style="margin-top:12px"><h3>Latest goals against</h3><div style="overflow-x:auto"><table>${rec}</table></div></div>
+    <div class="hint" style="margin-top:8px">${g.against} goals against in ${g.games} replay games. Each goal is checked in this order and gets the first cause that fits: off the kickoff (within 10 s), a defender demoed, a double commit, a giveaway, a lost 50/50, a rebound, nobody goal-side at the shot, the last defender under 20 boost. "Beaten by a good play" = none of those. Worked out from positions, so treat single goals as a guide.</div>`;
+}
+function scoredHtml(g){
+  const head = `<h3 class="sect">How goals are scored</h3>`;
+  if (!g || !(g.for + g.against)) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const max = Math.max(1, ...g.kinds_for.map(k=>k.goals), ...g.kinds_against.map(k=>k.goals));
+  const rows = g.kinds_for.map((k,i)=>{ const a = g.kinds_against[i];
+    return `<div class="md-row"><div class="md-lab gt-lab">${esc(k.label)}</div><div class="md-n">${a.goals}</div>
+      <div class="gt-bar l"><i style="width:${100*a.goals/max}%"></i></div><div class="md-mid"></div><div class="gt-bar r"><i style="width:${100*k.goals/max}%"></i></div>
+      <div class="md-n">${k.goals}</div><div class="md-diff hint">${pct(k.pct)}</div></div>`; }).join('');
+  return head + `<div class="card"><div class="md-row md-head"><div class="md-lab gt-lab"></div><div class="md-n"></div><div style="flex:1;text-align:right">Their goals</div><div class="md-mid"></div><div style="flex:1">Your team's goals</div><div class="md-n"></div><div class="md-diff">share</div></div>${rows}
+    <div class="hint" style="margin-top:8px">Off the kickoff = within 10 s of it. Rebound = scored within two touches after the other team touched it in your attacking third. Counter = won the ball in your own half and scored within 8 s. Passing play = two or more of the team touched it in the final move. Solo = everything else.</div></div>`;
+}
+function xgHtml(x){
+  const head = `<h3 class="sect">Chances vs finishing (expected goals)</h3>`;
+  if (!x || !x.for.shots) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const diff = v => `<span class="${v>0?'up':v<0?'down':''}">${v>0?'+':''}${num(v,1)}</span>`;
+  const tile = (lab, val, sub) => `<div class="card tile"><div class="label">${lab}</div><div class="val">${val}</div><div class="sub">${sub}</div></div>`;
+  const F = x.for, A = x.against;
+  const make = F.xg_pg >= A.xg_pg ? 'You create more and better chances than you allow.' : 'The other team creates more chances than you do.';
+  const near = v => Math.abs(v.diff) < Math.max(2, 0.06 * v.xg);
+  const fin = near(F) ? 'Your team scores about what its chances are worth.' : F.diff > 0 ? `Your team scores ${num(F.diff,1)} more than its chances are worth: good finishing.` : `Your team scores ${num(-F.diff,1)} fewer than its chances are worth: finishing is costing goals.`;
+  const sv = near(A) ? 'The other team scores about what its chances are worth.' : A.diff < 0 ? `They score ${num(-A.diff,1)} fewer than their chances: your saves are doing well.` : `They score ${num(A.diff,1)} more than their chances: shots are getting past you more than they should.`;
+  const pl = x.players.map(p=>`<tr><td class="l"><b>${esc(p.label)}</b></td><td>${p.shots}</td><td>${num(p.xg,1)}</td><td><b>${p.goals}</b></td><td>${diff(p.diff)}</td><td>${num(p.xg_pg,2)}</td><td>${p.per_shot!=null ? num(p.per_shot,2) : '–'}</td></tr>`).join('');
+  const lab = Object.fromEntries(x.players.map(p=>[p.key, p.label]));
+  const miss = x.big_chances_missed.length ? `<div class="card" style="margin-top:12px"><h3>Biggest chances missed</h3><table>${x.big_chances_missed.map(m=>`<tr class="click" data-gid="${m.id}"><td class="l hint">${fmtDate(m.t)}</td><td class="l">${esc(lab[m.who]||'')}</td><td><b>${Math.round(m.xg*100)}%</b> chance</td><td class="hint">${m.speed ?? '–'} km/h</td></tr>`).join('')}</table></div>` : '';
+  return head + `<div class="grid tiles">
+      ${tile('Your team: goals vs xG', `${F.goals} <span class="hint">/ ${num(F.xg,1)}</span>`, `${diff(F.diff)} · ${num(F.xg_pg,2)} xG a game`)}
+      ${tile('Against: goals vs xG', `${A.goals} <span class="hint">/ ${num(A.xg,1)}</span>`, `${diff(A.diff)} · ${num(A.xg_pg,2)} xG a game`)}
+      ${tile('Chance quality', `${Math.round(100*(F.per_shot||0))}%`, `avg shot · theirs ${Math.round(100*(A.per_shot||0))}%`)}</div>
+    <div class="srnote" style="margin-top:10px">${make} ${fin} ${sv}</div>
+    <div class="card" style="margin-top:12px"><h3>By player</h3><div style="overflow-x:auto"><table class="stt"><tr><th class="l">Player</th><th>Shots</th><th>xG</th><th>Goals</th><th>vs xG</th><th>xG / game</th><th>Per shot</th></tr>${pl}</table></div></div>${miss}
+    <div class="hint" style="margin-top:8px">xG = how likely each shot was to go in, from where it was taken, how much of the goal was open, its speed and height, and how many defenders were goal-side. The model learns from all ${x.model_shots} shots in your games (${x.model_goals} goals), so it fits your lobbies. Above xG = finishing better than the chances; below = missing chances.</div>`;
+}
+const DGF = (k, v) => v==null ? '–' : k==='recovery_s' ? num(v,1)+' s' : k.startsWith('pct_') || k==='touch_share' ? Math.round(v)+'%' : num(v, k==='boost_def' ? 0 : 2);
+function teamPlayHtml(t){
+  const head = `<h3 class="sect">Team habits</h3>`;
+  if (!t || !t.rows.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const keys = ['double_commits','rotation_cuts','pct_held_back','giveaways','recovery_s','touch_share','pct_last_back','boost_def'];
+  const low = new Set(t.lower_better);
+  const cell = (k, v) => { const l = t.lobby[k]; if (v==null || l==null || ['touch_share'].includes(k)) return `<td>${DGF(k,v)}</td>`;
+    const rel = l ? (v-l)/Math.abs(l) : 0, bad = low.has(k) ? rel > 0.1 : ['boost_def','pct_last_back','pct_held_back'].includes(k) ? rel < -0.1 : false, good = low.has(k) ? rel < -0.1 : ['boost_def','pct_held_back'].includes(k) ? rel > 0.1 : false;
+    return `<td class="${bad?'down':good?'up':''}"><b>${DGF(k,v)}</b></td>`; };
+  const even = t.rows.length ? 100 / Math.max(2, Math.min(3, t.rows.length)) : 33;
+  const chaser = t.rows.filter(r=>r.touch_share > even + 6 && r.pct_last_back < (t.lobby.pct_last_back||33) - 3);
+  return head + (chaser.length ? `<div class="srnote"><b>Ball-chasing check:</b> ${chaser.map(r=>`${esc(r.label)} takes ${Math.round(r.touch_share)}% of the team's touches but is last back only ${Math.round(r.pct_last_back)}% of the time`).join('; ')}.</div>` : '') +
+    `<div class="card" style="margin-top:10px"><div style="overflow-x:auto"><table class="stt"><tr><th class="l">Per game</th>${keys.map(k=>`<th>${esc(t.labels[k]||k)}${low.has(k)?' ↓':''}</th>`).join('')}</tr>
+      ${t.rows.map(r=>`<tr><td class="l"><b>${esc(r.label)}</b><div class="hint small">${r.games} games</div></td>${keys.map(k=>cell(k, r[k])).join('')}</tr>`).join('')}
+      <tr class="hint"><td class="l">Lobby average</td>${keys.map(k=>`<td>${DGF(k, t.lobby[k])}</td>`).join('')}</tr></table></div>
+    <div class="hint" style="margin-top:6px">Red = clearly worse than the lobby average, green = clearly better (↓ = lower is better). Double commit: you and a teammate both went for the same ball and both got there, and you started going second. Rotation cut: a teammate was already going and you took the ball off them. Held back: when that happened, how often you pulled out instead (higher is better). Giveaway: a touch in your own or the middle third (not a clear) that the other team picks up and keeps. Recovery time: how long it takes to get back goal-side when the ball is in your half and you're caught in front of it. Boost when the ball comes into your third: how ready you are to defend.</div></div>`;
+}
+function rolesHtml(t){
+  const head = `<h3 class="sect">Win rate by role</h3>`;
+  if (!t || !t.rows.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const cards = t.rows.map(r=>{ const best = [...r.roles].filter(x=>x.games>=4).sort((a,b)=>b.win_rate-a.win_rate)[0];
+    return `<div class="card"><h3>${esc(r.label)}</h3><table class="ftable">${r.roles.map(x=>`<tr><td class="l">${esc(x.label)}</td><td>${x.wins}–${x.losses}</td><td style="width:55%">${wrBar(x.win_rate, x.games)}</td></tr>`).join('')}</table>
+      <div class="hint" style="margin-top:6px">Time split: first ${DGF('pct_first_man', r.pct_first_man)} · second ${DGF('pct_second_man', r.pct_second_man)}${r.pct_third_man!=null?` · third ${DGF('pct_third_man', r.pct_third_man)}`:''}${best ? ` · <b>best as ${esc(best.label.toLowerCase())}</b>` : ''}</div></div>`; }).join('');
+  return head + `<div class="grid fgrid" style="margin-top:0">${cards}</div>
+    <div class="hint" style="margin-top:8px">Each game is filed under the role that player spent most time in: first man = closest to the ball on the team, third man = furthest (3v3). Use it to decide who should hang back and who should press. A role needs 4+ games before it's called "best".</div>`;
+}
+function givesHtml(t){
+  const head = `<h3 class="sect">Where the ball is given away</h3>`;
+  if (!t || !t.rows.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  if (!t.gives[DG.give]) DG.give = t.rows[0].key;
+  const pts = t.gives[DG.give] || [];
+  const r = t.rows.find(x=>x.key===DG.give);
+  const zones = [['Defensive third', p=>p[1] < -1707], ['Middle third', p=>p[1] >= -1707]];
+  const svg = `<svg viewBox="-4400 -5450 8800 10900" class="padsvg givesvg">
+    <rect x="-4096" y="-5120" width="8192" height="10240" rx="1000" fill="var(--panel2)" stroke="var(--line-hi)" stroke-width="30"/>
+    <line x1="-4096" y1="0" x2="4096" y2="0" stroke="var(--line-hi)" stroke-width="24"/><circle cx="0" cy="0" r="900" fill="none" stroke="var(--line-hi)" stroke-width="24"/>
+    ${[-1707,1707].map(y=>`<line x1="-4096" y1="${y}" x2="4096" y2="${y}" stroke="var(--line)" stroke-width="20" stroke-dasharray="120 120"/>`).join('')}
+    <line x1="-893" y1="-5150" x2="893" y2="-5150" stroke="var(--orange)" stroke-width="110"/><line x1="-893" y1="5150" x2="893" y2="5150" stroke="var(--blue)" stroke-width="110"/>
+    ${pts.map(p=>`<circle cx="${p[0]}" cy="${-p[1]}" r="150" fill="var(--loss)" fill-opacity=".55"/>`).join('')}</svg>`;
+  const side = (p, s) => s==='l' ? p[0] < -1365 : s==='r' ? p[0] > 1365 : Math.abs(p[0]) <= 1365;
+  const zone = zones.map(([n,f])=>{ const z = pts.filter(f); return `<tr><td class="l">${n}</td><td><b>${z.length}</b></td><td class="hint">${pts.length?pct(100*z.length/pts.length):'–'}</td>
+      <td class="hint">left ${z.filter(p=>side(p,'l')).length} · middle ${z.filter(p=>side(p,'m')).length} · right ${z.filter(p=>side(p,'r')).length}</td></tr>`; }).join('');
+  return head + `<div class="card"><div class="chips" style="margin-bottom:10px">${t.rows.map(x=>`<button data-give="${x.key}" class="${x.key===DG.give?'on':''}">${esc(x.label)}</button>`).join('')}</div>
+    <div class="givewrap">${svg}<div><table class="ftable">${zone}</table>
+      <div class="hint" style="margin-top:8px">${pts.length} giveaways over ${r ? r.games : 0} games (${r ? DGF('giveaways', r.giveaways) : '–'} a game). Own goal at the bottom. Middle-of-the-field giveaways in your own third are the ones that turn into goals: clear to the side walls or corners instead.</div></div></div></div>`;
+}
+// ---- more diagnosis: who cuts whom, by score, spacing, whiffs, shot selection, kickoff spawns, defending, opponents, changes
+function cutMapHtml(r){
+  const head = `<h3 class="sect">Who cuts in on whom</h3>`;
+  if (!r || !r.matrix.length) return head + `<div class="card"><div class="hint">Needs games with a replay and at least one regular teammate.</div></div>`;
+  const people = [...new Map(r.matrix.flatMap(x=>[[x.second, x.second_label],[x.first, x.first_label]])).entries()];
+  const cell = (a, b) => { const x = r.matrix.find(m=>m.second===a && m.first===b); if (!x) return '<td class="hint">–</td>';
+    const max = Math.max(...r.matrix.map(m=>m.cut), 1), sh = Math.round(8 + 24 * x.cut / max);
+    return `<td class="hm" style="background:color-mix(in srgb, var(--loss) ${sh}%, transparent)" title="${x.cut} rotation cuts, ${x.double} double commits, held back ${x.held} times"><b>${x.cut}</b><small>${x.double} double · held ${x.held}</small></td>`; };
+  const top = [...r.matrix].sort((a,b)=>b.cut-a.cut)[0];
+  const S = r.spacing, sp = S.split;
+  return head + `<div class="grid two" style="margin-top:0">
+    <div class="card"><h3>Went in on a teammate who was already going</h3><div style="overflow-x:auto"><table class="hmgrid">
+      <tr><th class="l" title="Rows: the player who cut in. Columns: the teammate who was already going for the ball. Big number = rotation cuts; lower is better.">Who went in ↓ · on whom →</th>${people.map(([,l])=>`<th>${esc(l)}</th>`).join('')}</tr>
+      ${people.map(([a,la])=>`<tr><th class="l">${esc(la)}</th>${people.map(([b])=>a===b?'<td class="hint">·</td>':cell(a,b)).join('')}</tr>`).join('')}</table></div>
+      <div class="hint" style="margin-top:6px">Big number = rotation cuts: times the row player took the ball off the column player, who was already going for it. Underneath: double commits (both got there) and times the row player held back instead.${top && top.cut ? ` Most cuts: <b>${esc(top.second_label)} on ${esc(top.first_label)}</b> (${top.cut}).` : ''}</div></div>
+    <div class="card"><h3>Spacing</h3><table class="ftable">
+      <tr><td class="l">Two of you bunched together (within ~6 m)</td><td><b>${pct(S.bunched)}</b></td><td class="hint">them ${pct(S.bunched_them)}</td></tr>
+      ${S.same_side!=null ? `<tr><td class="l">All three on one side of the field</td><td><b>${pct(S.same_side)}</b></td><td class="hint">them ${pct(S.same_side_them)}</td></tr>` : ''}</table>
+      ${sp ? `<div class="srfacts" style="margin-top:8px"><span class="srfact ${sp.tight_wr < sp.spread_wr ? 'down' : ''}">More bunched than usual: <b>${pct(sp.tight_wr)}</b> wins (${sp.tight_n} g)</span><span class="srfact">Less bunched: <b>${pct(sp.spread_wr)}</b> wins (${sp.spread_n} g)</span></div>` : ''}
+      <div class="hint" style="margin-top:6px">Share of live time with every one of you on the field. Bunching and everyone drifting to one side are the usual signs of a broken rotation.</div></div></div>`;
+}
+function scoreStateHtml(r){
+  const head = `<h3 class="sect">How you play by the score</h3>`;
+  if (!r || !r.by_state.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const names = [...new Map(r.by_state.map(x=>[x.key, x.label])).entries()];
+  const lab = {ahead:'Ahead', tied:'Tied', behind:'Behind'};
+  const row = x => `<tr><td class="l">${lab[x.state]}</td><td class="hint">${x.minutes} min</td><td>${pct(x.pct_last_back)}</td><td>${num(x.went_in,2)}</td><td>${x.held_pct==null?'–':pct(x.held_pct)}</td><td>${num(x.giveaways,2)}</td></tr>`;
+  return head + `<div class="grid fgrid" style="margin-top:0">${names.map(([k,l])=>`<div class="card"><h3>${esc(l)}</h3><table class="ftable pat">
+      <tr><th class="l">Score</th><th>Time</th><th>% last back</th><th>Went in / 5 min</th><th>Held back</th><th>Giveaways / 5 min</th></tr>
+      ${r.by_state.filter(x=>x.key===k).map(row).join('')}</table></div>`).join('')}</div>
+    <div class="hint" style="margin-top:8px">The same habits split by whether your team was ahead, level or behind at that moment, per 5 minutes so the rows compare fairly. Going in on teammates more and being last back less when behind = forcing it; much more last back when ahead = sitting too deep.</div>`;
+}
+function mechanicsHtml(r){
+  const head = `<h3 class="sect">Whiffs &amp; shot selection</h3>`;
+  if (!r || !r.rows.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const L = r.lobby;
+  const c = (v, l, lowBetter=true, f=x=>num(x,2)) => { if (v==null) return '<td>–</td>'; const rel = l ? (v-l)/Math.abs(l) : 0; const bad = lowBetter ? rel > 0.12 : rel < -0.12, good = lowBetter ? rel < -0.12 : rel > 0.12;
+    return `<td class="${bad?'down':good?'up':''}"><b>${f(v)}</b></td>`; };
+  return head + `<div class="card"><div style="overflow-x:auto"><table class="stt"><tr><th class="l">Player</th><th>Whiffs / game</th><th>In the air</th><th>% of attempts</th><th>Long-shot share</th><th>Long shots → goals</th></tr>
+      ${r.rows.map(x=>`<tr><td class="l"><b>${esc(x.label)}</b><div class="hint small">${x.games} games</div></td>${c(x.whiffs, L.whiffs)}${c(x.air_whiffs, L.air_whiffs)}${c(x.pct_whiff, L.pct_whiff, true, v=>Math.round(v)+'%')}${c(x.low_share, L.low_share, true, v=>Math.round(v)+'%')}<td>${x.low_goals} of ${x.low_shots}</td></tr>`).join('')}
+      <tr class="hint"><td class="l">Lobby average</td><td>${num(L.whiffs,2)}</td><td>${num(L.air_whiffs,2)}</td><td>${pct(L.pct_whiff)}</td><td>${pct(L.low_share)}</td><td></td></tr></table></div>
+    <div class="hint" style="margin-top:6px">Whiff = a jump or flip at the ball that got within reach of it without touching it. It's the difference between a bad decision and a good decision with a missed touch. Long shot = a shot the xG model gives under ${Math.round(r.low_xg*100)}% to go in; a high share means shooting when a pass or keeping the ball was better.</div></div>`;
+}
+function kickSpawnHtml(r){
+  const head = `<h3 class="sect">Kickoffs by spawn</h3>`;
+  if (!r || !Object.keys(r.team).length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const cellOf = d => !d ? '<td class="hint">–</td>' : `<td>${d.win_pct==null?'–':`<b class="${d.win_pct>=55?'up':d.win_pct<45?'down':''}">${Math.round(d.win_pct)}%</b>`}<div class="hint small">${d.taken} taken · goals ${d.goal_for}–${d.goal_against}</div></td>`;
+  const sp = r.spawns.filter(s=>r.team[s]);
+  const best = {};
+  sp.forEach(s=>{ const c = r.players.map(p=>[p.label, p.by[s]]).filter(([,d])=>d && d.won + d.lost >= 8).sort((a,b)=>b[1].win_pct-a[1].win_pct); if (c.length > 1) best[s] = c[0]; });
+  const side = s => / (left|right)$/.test(s);
+  return head + `<div class="card"><div style="overflow-x:auto"><table class="stt kspawn"><tr><th class="l">Who took it</th>${sp.map(s=>`<th class="${side(s)?'ks-side':'ks-all'}">${s}</th>`).join('')}</tr>
+      ${r.players.map(p=>`<tr><td class="l"><b>${esc(p.label)}</b></td>${sp.map(s=>cellOf(p.by[s])).join('')}</tr>`).join('')}
+      <tr class="hint"><td class="l">Team</td>${sp.map(s=>cellOf(r.team[s])).join('')}</tr></table></div>
+    ${Object.keys(best).length ? `<div class="srnote" style="margin-top:10px">Best taker: ${Object.entries(best).map(([s,[l,d]])=>`<b>${esc(l)}</b> from ${s.toLowerCase()} (${Math.round(d.win_pct)}%)`).join(' · ')}.</div>` : ''}
+    <div class="hint" style="margin-top:6px">Win % = the ball is on their side 2 s after the kickoff. "Goals" = scored or conceded within 10 s. Spawn = where the player who took it started; left and right are from that player's car, facing the other team's goal. "Diagonal" and "Off-centre" add both sides together. Best taker needs 8+ decided kickoffs.</div></div>`;
+}
+function defendingHtml(r){
+  const head = `<h3 class="sect">Saves &amp; defensive shape</h3>`;
+  if (!r || !r.rows.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const diff = v => `<span class="${v<0?'up':v>0?'down':''}">${v>0?'+':''}${num(v,1)}</span>`;
+  const max = Math.max(...r.shape.map(s=>s.goal_pct||0), 1);
+  return head + `<div class="grid two" style="margin-top:0">
+    <div class="card"><h3>Saves against how dangerous the shots were</h3><div style="overflow-x:auto"><table class="stt"><tr><th class="l">Player</th><th>Saves</th><th>Goals saved (xG)</th><th>Saved xG / game</th><th>Big saves</th><th>As last back vs xG</th></tr>
+      ${r.rows.map(x=>`<tr><td class="l"><b>${esc(x.label)}</b></td><td>${x.saves}</td><td><b>${num(x.xg_saved,1)}</b></td><td>${num(x.xg_saved_pg,2)}</td><td>${x.big_saves}</td><td>${diff(x.last_vs_xg)} <span class="hint small">${x.last_conceded}/${x.last_faced}</span></td></tr>`).join('')}</table></div>
+      <div class="hint" style="margin-top:6px">Goals saved = how many goals the shots you saved were worth on average. As last back: goals let in when you were the deepest defender, minus what those shots were worth (green/negative = stopping more than expected).</div></div>
+    <div class="card"><h3>How many of you were goal-side when they shot</h3><table class="ftable">${r.shape.map(s=>`<tr><td class="l">${esc(s.label)}</td><td style="width:40%">${hbar(s.goal_pct||0, max)}</td><td><b>${pct(s.goal_pct)}</b> scored</td><td class="hint">${s.shots} shots · chance ${pct(s.xg_pct)}</td></tr>`).join('')}</table>
+      ${r.last_dist.goals!=null ? `<div class="hint" style="margin-top:8px">Last defender's distance from the goal line: <b>${Math.round(r.last_dist.goals/100)} m</b> on goals vs <b>${Math.round(r.last_dist.stopped/100)} m</b> on shots that didn't go in.</div>` : ''}</div></div>`;
+}
+function opponentsHtml(r){
+  const head = `<h3 class="sect">What beats you</h3>`;
+  if (!r || !r.rows.length) return head + `<div class="card"><div class="hint">Needs a few more games with a replay.</div></div>`;
+  return head + `<div class="card"><table class="ftable pat"><tr><th class="l">Against…</th><th style="width:30%">The most</th><th style="width:30%">The least</th><th>Gap</th></tr>
+    ${r.rows.map(x=>`<tr><td class="l">${esc(x.label)}</td><td>${wrBar(x.high_wr, x.high_n)}</td><td>${wrBar(x.low_wr, x.low_n)}</td><td class="${x.gap<=-15?'down':x.gap>=15?'up':''}"><b>${x.gap>0?'+':''}${Math.round(x.gap)}</b></td></tr>`).join('')}</table>
+    <div class="hint" style="margin-top:6px">Your win rate against the third of opponents who did the most of each thing in the game, and the third who did the least. A big negative gap = that style gives you trouble. Some of it runs both ways (a team that's winning gets more of the ball), so read it as a pointer.</div></div>`;
+}
+function changesHtml(r){
+  const head = `<h3 class="sect">What's changed lately</h3>`;
+  if (!r || (!r.better && !r.worse) || r.before == null) return head + `<div class="card"><div class="hint">Needs at least ${18} games to compare recent ones with earlier ones.</div></div>`;
+  const f = x => v => x.pct_unit ? Math.round(v)+'%' : num(v, Math.abs(v) >= 100 ? 0 : 2);
+  const li = (x, cls) => `<tr><td class="l">${esc(x.label)} <span class="hint small">${esc(x.group)}</span></td><td class="hint">${f(x)(x.before)}</td><td>→</td><td class="${cls}"><b>${f(x)(x.recent)}</b></td><td class="hint">${x.change_pct==null?'':(x.change_pct>0?'+':'')+Math.round(x.change_pct)+'%'}</td></tr>`;
+  return head + `<div class="grid two" style="margin-top:0">
+    <div class="card"><h3>Getting better</h3>${r.better.length ? `<table class="ftable">${r.better.map(x=>li(x,'up')).join('')}</table>` : '<div class="hint">Nothing has clearly improved yet.</div>'}</div>
+    <div class="card"><h3>Slipping</h3>${r.worse.length ? `<table class="ftable">${r.worse.map(x=>li(x,'down')).join('')}</table>` : '<div class="hint">Nothing has clearly dropped.</div>'}</div></div>
+    <div class="hint" style="margin-top:8px">${isMe()?'Your':esc(yourW())} last ${r.recent} games against the ${r.before} before them, for every stat. Only changes that are big compared with how much the stat normally swings from game to game are listed.</div>`;
+}
+// ---- risky challenges, first defender, demos in detail, who passes to whom, and one game's habits
+function challengesHtml(r){
+  const head = `<h3 class="sect">Risky challenges &amp; first defender</h3>`;
+  if (!r || !r.rows.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  const L = r.lobby, T = r.team;
+  const hi = (v, l) => v!=null && l!=null && v > l * 1.12 ? 'down' : v!=null && l!=null && v < l * 0.88 ? 'up' : '';
+  return head + `<div class="grid tiles" style="margin-bottom:10px">
+      <div class="card tile"><div class="label">First defender wins it</div><div class="val">${pct(T.fd_won)}</div><div class="sub">them ${pct(T.fd_won_them)}</div></div>
+      <div class="card tile"><div class="label">Attacks nobody challenged</div><div class="val">${pct(T.unchallenged)}</div><div class="sub">them ${pct(T.unchallenged_them)}</div></div></div>
+    <div class="card"><div style="overflow-x:auto"><table class="stt"><tr><th class="l">Player</th><th>Last-man challenges</th><th>…lost the ball</th><th>…goal against</th><th>Low-boost challenges</th><th>…lost the ball</th><th>…goal against</th><th>First-defender challenges</th><th>…won</th></tr>
+      ${r.rows.map(x=>`<tr><td class="l"><b>${esc(x.label)}</b><div class="hint small">${x.games} games</div></td>
+        <td class="${hi(x.lm_pg, L.lastman_challenges)}"><b>${num(x.lm_pg,2)}</b> <span class="hint small">/ game</span></td><td>${pct(x.lm_lost_pct)}</td><td>${x.lm_goal}</td>
+        <td class="${hi(x.lb_pg, L.lowboost_challenges)}"><b>${num(x.lb_pg,2)}</b> <span class="hint small">/ game</span></td><td>${pct(x.lb_lost_pct)}</td><td>${x.lb_goal}</td>
+        <td>${num(x.fd_pg,2)} <span class="hint small">/ game</span></td><td><b>${pct(x.fd_won_pct)}</b></td></tr>`).join('')}
+      <tr class="hint"><td class="l">Lobby average</td><td>${num(L.lastman_challenges,2)}</td><td></td><td></td><td>${num(L.lowboost_challenges,2)}</td><td></td><td></td><td></td><td></td></tr></table></div>
+    <div class="hint" style="margin-top:6px">Last-man challenge: going for the ball outside your own third while you were the furthest back, so nobody was behind you. Low-boost challenge: going in with under 15 boost. "Lost the ball" = the other team had it within 3 s; "goal against" = they scored within 8 s. First defender: when the other team brings the ball into your third, the first of you to touch it, and whether you kept it or cleared it. Red/green = clearly more/fewer than the lobby.</div></div>`;
+}
+function demosHtml(r){
+  const head = `<h3 class="sect">Demos in detail</h3>`;
+  if (!r || !r.rows.length) return head + `<div class="card"><div class="hint">Needs games with a replay.</div></div>`;
+  if (!DG.demo || !r.spots[DG.demo]) DG.demo = r.rows[0].key;
+  const pts = r.spots[DG.demo] || [];
+  const svg = `<svg viewBox="-4400 -5450 8800 10900" class="padsvg givesvg">
+    <rect x="-4096" y="-5120" width="8192" height="10240" rx="1000" fill="var(--panel2)" stroke="var(--line-hi)" stroke-width="30"/>
+    <line x1="-4096" y1="0" x2="4096" y2="0" stroke="var(--line-hi)" stroke-width="24"/><circle cx="0" cy="0" r="900" fill="none" stroke="var(--line-hi)" stroke-width="24"/>
+    ${[-1707,1707].map(y=>`<line x1="-4096" y1="${y}" x2="4096" y2="${y}" stroke="var(--line)" stroke-width="20" stroke-dasharray="120 120"/>`).join('')}
+    <line x1="-893" y1="-5150" x2="893" y2="-5150" stroke="var(--orange)" stroke-width="110"/><line x1="-893" y1="5150" x2="893" y2="5150" stroke="var(--blue)" stroke-width="110"/>
+    ${pts.map(p=>`<path d="M${p[0]-160},${-p[1]-160} L${p[0]+160},${-p[1]+160} M${p[0]+160},${-p[1]-160} L${p[0]-160},${-p[1]+160}" stroke="var(--loss)" stroke-width="70" stroke-opacity=".7"/>`).join('')}</svg>`;
+  const T = r.team;
+  return head + `<div class="grid two" style="margin-top:0">
+    <div class="card"><div style="overflow-x:auto"><table class="stt"><tr><th class="l">Player</th><th>Demos / game</th><th>…led to a goal</th><th>Demoed / game</th><th>…in your own third</th><th>…goal against</th></tr>
+      ${r.rows.map(x=>`<tr><td class="l"><b>${esc(x.label)}</b></td><td><b>${num(x.demos_pg,2)}</b></td><td>${x.demos_goal}</td><td><b>${num(x.demoed_pg,2)}</b></td><td>${pct(x.def_pct)}</td><td>${x.demoed_goal}</td></tr>`).join('')}</table></div>
+      <div class="srfacts" style="margin-top:8px"><span class="srfact">Your team's demos → goal within 5 s: <b>${T.for_goal} of ${T.for}</b></span><span class="srfact">Their demos → goal against: <b>${T.against_goal} of ${T.against}</b></span></div>
+      ${r.top_demoers.length ? `<div class="hint" style="margin-top:8px">Opponents who demoed you most: ${r.top_demoers.map(o=>`${P(o.key, o.label)} ${o.demos}`).join(' · ')}</div>` : ''}</div>
+    <div class="card"><div class="chips" style="margin-bottom:10px">${r.rows.map(x=>`<button data-demo="${x.key}" class="${x.key===DG.demo?'on':''}">${esc(x.label)}</button>`).join('')}</div>
+      <div class="givewrap">${svg}<div class="hint">Where ${esc((r.rows.find(x=>x.key===DG.demo)||{}).label||'')} got demoed (${pts.length}). Own goal at the bottom. Demos in your own third are the dangerous ones: stay off the walls and keep moving when you're last back.</div></div></div></div>`;
+}
+function passingHtml(r){
+  const head = `<h3 class="sect">Who passes to whom</h3>`;
+  if (!r || !r.pairs.length) return head + `<div class="card"><div class="hint">Needs games with a replay and at least one regular teammate.</div></div>`;
+  const people = [...new Map(r.pairs.flatMap(x=>[[x.from, x.from_label],[x.to, x.to_label]])).entries()];
+  const max = Math.max(...r.pairs.map(p=>p.n), 1);
+  const cell = (a, b) => { const x = r.pairs.find(p=>p.from===a && p.to===b); if (!x) return '<td class="hint">–</td>';
+    return `<td class="hm" style="background:color-mix(in srgb, var(--win) ${Math.round(8 + 22*x.n/max)}%, transparent)" title="${x.completion!=null ? `${Math.round(x.completion)}% of passes completed · ${x.failed} didn't arrive` : 'Completion rate not known'}"><b>${x.n}</b><small>${x.shot} shots · ${x.goal} goals</small></td>`; };
+  const best = [...r.pairs].filter(p=>p.n>=15).sort((a,b)=>b.shot_pct-a.shot_pct)[0];
+  return head + `<div class="card"><div style="overflow-x:auto"><table class="hmgrid">
+      <tr><th class="l" title="Rows pass to columns. Big number = completed passes; underneath, how many led to a shot or goal within a few seconds. Hover a cell for the completion rate.">From ↓ · to →</th>${people.map(([,l])=>`<th>${esc(l)}</th>`).join('')}</tr>
+      ${people.map(([a,la])=>`<tr><th class="l">${esc(la)}</th>${people.map(([b])=>a===b?'<td class="hint">·</td>':cell(a,b)).join('')}</tr>`).join('')}</table></div>
+    <div class="srfacts" style="margin-top:8px"><span class="srfact">Passes a game: <b>${r.team.us_pg}</b> (them ${r.team.them_pg})</span>${best ? `<span class="srfact up">Most dangerous link: <b>${esc(best.from_label)} → ${esc(best.to_label)}</b>, ${Math.round(best.shot_pct)}% lead to a shot</span>` : ''}</div>
+    <div class="hint" style="margin-top:6px">A pass = one of you touches the ball and a teammate touches it next within 3 s, with the ball moving 7 m or more. Hover a cell for its completion rate: completed passes ÷ (completed + passes hit straight at that teammate that the other team got first or nobody reached within 5 s). "Shots" = your team shot within 4 s of the pass; "goals" = scored within 5 s.</div></div>`;
+}
+// one game: everyone's habits, xG and why each goal against went in
+function gameHabitsHtml(m){
+  const rows = m.teams.flatMap((t,ti)=>t.players.map((p,pi)=>({p, t, ti, pi}))).filter(x=>x.p.rstats && 'bpm' in x.p.rstats);
+  if (!rows.length) return '<div class="card"><div class="hint">Needs a replay.</div></div>';
+  const mine = m.my_index || [0, -1];
+  rows.sort((a,b)=>(a.ti!==mine[0]) - (b.ti!==mine[0]));  // your team first
+  const cols = [['rotation_cuts','Cuts'],['double_commits','Double commits'],['pct_held_back','% held back'],['giveaways','Giveaways'],['whiffs','Whiffs'],
+    ['lastman_challenges','Last-man challenges'],['lowboost_challenges','Low-boost challenges'],['first_def','First-defender'],['pct_first_def_won','…won']];
+  const f = (k, v) => v==null ? '–' : k.startsWith('pct_') ? Math.round(v)+'%' : num(v, 1);
+  const usual = {};
+  const tb = (typeof ST !== "undefined" && ST.table) || null; if (tb && isMe()) tb.rows.forEach(r=>usual[r.key]=r.you);
+  const tbl = `<div style="overflow-x:auto"><table class="stt"><tr><th class="l">Player</th>${cols.map(([,l])=>`<th>${l}</th>`).join('')}</tr>
+    ${rows.map(x=>{ const me = x.ti===mine[0] && x.pi===mine[1];
+      return `<tr><td class="l"><span style="color:var(--${x.t.color})">●</span> <b>${esc(x.p.alias||x.p.name)}</b>${me?' <span class="hint small">(you)</span>':''}</td>${cols.map(([k])=>`<td>${f(k, x.p.rstats[k])}${me && usual[k]!=null ? `<div class="hint small">usual ${f(k, usual[k])}</div>` : ''}</td>`).join('')}</tr>`; }).join('')}</table></div>`;
+  const us = m.teams[mine[0]] || m.teams[0], them = m.teams[1 - (mine[0]||0)] || m.teams[1];
+  const xg = m.xg ? `<div class="srfacts" style="margin:10px 0"><span class="srfact">${m.my_index?'Your team':esc(us.color==='blue'?'Blue':'Orange')} (${us.color}): <b>${us.score ?? '?'} goals from ${num(m.xg[us.color],2)} xG</b></span>
+      <span class="srfact">${m.my_index?'Them':esc(them.color==='blue'?'Blue':'Orange')} (${them.color}): <b>${them.score ?? '?'} goals from ${num(m.xg[them.color],2)} xG</b></span></div>` : '';
+  const ci = us.color==='blue' ? 0 : 1;
+  const ga = (m.rplays||[]).filter(g=>g.team!==ci);
+  const causes = ga.length ? `<div class="card" style="margin-top:12px"><h3>Why each goal against went in</h3><table>${ga.map(g=>`<tr><td class="l hint">${g.clock!=null?shotClock(g.clock):''}</td><td class="l"><b>${esc(DG_CAUSE[g.cause]||g.cause)}</b>${g.causes.length>1?`<div class="hint small">also: ${g.causes.slice(1).map(c=>esc(DG_CAUSE[c]||c)).join(', ')}</div>`:''}</td><td class="l">${(g.involved||[]).map(esc).join(', ')||'<span class="hint">–</span>'}</td></tr>`).join('')}</table></div>` : '';
+  const shots = (m.rshots||[]).filter(s=>s.xg!=null).sort((a,b)=>b.xg-a.xg).slice(0,6);
+  const sh = shots.length ? `<div class="card" style="margin-top:12px"><h3>Best chances</h3><table>${shots.map(s=>`<tr><td class="l">${esc(s.name)}</td><td><b>${Math.round(s.xg*100)}%</b> chance</td><td>${s.outcome==='goal'||s.goal?'<span class="up">goal</span>':esc(s.outcome||'')}</td><td class="hint">${s.speed ?? '–'} km/h</td></tr>`).join('')}</table></div>` : '';
+  return `<div class="card">${tbl}<div class="hint" style="margin-top:6px">This game's habits for everyone in it. "Usual" under your numbers is your average per game. Hover the column names for what each one means.</div></div>${xg}<div class="grid two" style="margin-top:0">${causes}${sh}</div>`;
+}
+const DG_CAUSE = {kickoff:'Off the kickoff', demo:'A defender was demoed', double_commit:'Double commit or rotation cut', giveaway:'Giveaway in your half',
+  fifty:'Lost a 50/50', rebound:'Rebound off a save or clear', nobody_back:'Nobody back', low_boost:'Last defender low on boost', other:'Beaten by a good play'};
+// ---- focus goals (Home): pick up to 4 stats to work on, and watch them session by session
+async function focusHtml(){
+  const f = await api('/api/focus').catch(()=>null);
+  if (!f) return '';
+  const fmt = (x, v) => v==null ? '–' : x.pct_unit ? Math.round(v)+'%' : num(v, Math.abs(v) >= 100 ? 0 : 2);
+  const card = x => { const vals = x.sessions.map(s=>s.v).filter(v=>v!=null), mx = Math.max(...vals, 1e-9), mn = Math.min(...vals, 0);
+    const better = x.before!=null && x.after!=null ? (x.lower_better ? x.after < x.before : x.after > x.before) : null;
+    return `<div class="card focus"><div class="row"><b>${esc(x.label)}</b>${x.lower_better?' <span class="hint">↓ lower is better</span>':''}<div class="spacer"></div><button class="btn sm" data-unfocus="${x.key}" title="Stop tracking">✕</button></div>
+      <div class="row" style="gap:14px;margin:6px 0"><div><div class="hint small">Before</div><b>${fmt(x, x.before)}</b></div><div><div class="hint small">Since ${fmtDay(x.since)}</div>
+        <b class="${better===true?'up':better===false?'down':''}">${fmt(x, x.after)}</b> <span class="hint">${x.after_games} g</span></div></div>
+      <div class="fbars">${x.sessions.map(s=>`<i title="${fmtDay(s.start)} · ${s.games} games · ${fmt(x, s.v)}" class="${s.start>=x.since?'on':''}" style="height:${s.v==null?0:Math.max(4, 100*(s.v-mn)/((mx-mn)||1))}%"></i>`).join('')}</div>
+      <div class="hint small">Last ${x.sessions.length} sessions, highlighted since you set it.</div></div>`; };
+  const opts = f.options.filter(o=>!f.focus.some(x=>x.key===o.key));
+  return `<h3 class="sect">Focus goals</h3>${f.focus.length ? `<div class="grid tiles">${f.focus.map(card).join('')}</div>` : '<div class="card"><div class="hint">Pick one or two things to work on (for example double commits or giveaways from a session report) and see them session by session.</div></div>'}
+    ${f.focus.length < 4 ? `<div class="row" style="gap:8px;margin-top:8px"><select class="e" id="focusPick" style="min-width:240px"><option value="">Add a focus stat…</option>${[...new Set(opts.map(o=>o.group))].map(g=>`<optgroup label="${esc(g)}">${opts.filter(o=>o.group===g).map(o=>`<option value="${o.key}">${esc(o.label)}</option>`).join('')}</optgroup>`).join('')}</select></div>` : ''}`;
+}
+async function saveFocus(list){ await api('/api/settings',{method:'PUT',body:JSON.stringify({focus: list})}); }
+function bindFocus(){
+  document.querySelectorAll('[data-unfocus]').forEach(b=>b.onclick=async()=>{ const f = await api('/api/focus'); await saveFocus(f.focus.filter(x=>x.key!==b.dataset.unfocus).map(x=>({key:x.key, since:x.since}))); renderHome(); });
+  if ($('#focusPick')) $('#focusPick').onchange = async e=>{ const k = e.target.value; if (!k) return; const f = await api('/api/focus');
+    const now = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,19);
+    await saveFocus([...f.focus.map(x=>({key:x.key, since:x.since})), {key:k, since:now}]); toast('Focus goal added'); renderHome(); };
 }
 function percentilesHtml(p){
   const head = `<h3 class="sect">${isMe()?'You':esc(yourW())} vs ${isMe()?'your':'their'} lobbies · percentiles</h3>`;
@@ -1075,9 +1482,13 @@ function applyDashLayout(){
     c.style.display = hidden.has(c.dataset.card) || (topic && !topic.includes(c.dataset.card)) ? 'none' : ''; });
   if ($('#dashCustom') && $('#dashCustom').dataset.open) renderDashCustom();
 }
-const DASH_DEFAULT = ['overview','score','recent','form','efficiency','replay','heat','pads','winconds','factors','clutch','style','difficulty','consistency','tags','when','calendar','rivals'];
+const DASH_DEFAULT = ['overview','score','recent','form','efficiency','replay','heat','pads','winconds','factors','clutch','goaltiming','changes','conceded','scored','xg','defending','challenges','teamplay','cutmap','scorestate','mechanics','passing','roles','kickspawn','giveaways','demos','opponents','fatigue','style','difficulty','consistency','tags','when','calendar','rivals'];
 const DASH_TITLES = { overview:'Overview tiles', score:'Score per game · vs lobby', recent:'Recent matches · bests · teammates', form:'Form', efficiency:'Efficiency',
-  replay:'Boost & movement', heat:'Heatmap', pads:'Boost pickup map', winconds:'Win conditions', factors:'What decides games', clutch:'Close games & clutch',
+  replay:'Boost & movement', heat:'Heatmap', pads:'Boost pickup map', winconds:'Win conditions', factors:'What decides games', clutch:'Close games & clutch', goaltiming:'When goals happen', fatigue:'Fatigue & tilt', conceded:'How you get scored on', scored:'How goals are scored',
+  xg:'Chances vs finishing (xG)', teamplay:'Team habits', roles:'Win rate by role', giveaways:'Giveaway map',
+  changes:"What's changed lately", defending:'Saves & defensive shape', cutmap:'Who cuts in on whom · spacing', scorestate:'How you play by the score',
+  mechanics:'Whiffs & shot selection', kickspawn:'Kickoffs by spawn', opponents:'What beats you',
+  challenges:'Risky challenges & first defender', demos:'Demos in detail', passing:'Who passes to whom',
   percentiles:'Percentiles vs your lobbies', style:'Play style radar', difficulty:'Lobby difficulty', consistency:'Consistency', tags:'Tags',
   when:'When you play', calendar:'Calendar', rivals:'Rivals' };
 async function saveDashLayout(){ try { await api('/api/settings',{method:'PUT',body:JSON.stringify({dash_layout: state.dashLayout})}); } catch(e){ toast('Could not save the layout'); } }
@@ -1350,7 +1761,7 @@ async function renderComparePlayers(){
   const headFor = S => `<tr><th>Stat</th>${S.map(x=>`<th>${nm(x)}</th>`).join('')}${S.length===2 ? `<th>${nm(S[0])} − ${nm(S[1])}</th>` : ''}</tr>`;
   const head = headFor(P), cols = P.length + (three ? 1 : 2);
   const sub = t => `<tr class="sub"><td colspan="${cols}">${t}</td></tr>`;
-  const RSK = ['bpm','avg_boost','pct_zero','stolen','avg_speed','pct_supersonic','pct_high_air','aerial_touches','pct_possession','avg_shot_speed','clears','centres','pct_def_third','pct_behind_ball','pct_last_back','avg_dist_ball'];
+  const RSK = ['bpm','avg_boost','pct_zero','stolen','avg_speed','pct_supersonic','pct_high_air','aerial_touches','pct_possession','avg_shot_speed','clears','centres','pct_def_third','pct_behind_ball','pct_last_back','avg_dist_ball','whiffs','air_whiffs','pct_whiff'];
   const rsRow = k => { const vals = P.map(S=>S.replay[k]);
     const better = RSM.neutral.has(k) ? 'none' : RSM.lower.has(k) ? 'low' : 'high';
     const diffTxt = ([a,b]) => rsSign(k, a!=null&&b!=null ? +(a-b).toFixed(2) : null);
@@ -1401,7 +1812,7 @@ async function renderComparePlayers(){
 }
 function histScoreText(m){ if (m.teams.length<2) return ''; const i=m.my_index?m.my_index[0]:0; return `${m.teams[i].score ?? '?'}–${m.teams[1-i].score ?? '?'}`; }
 const CMP_RS = ['bpm','avg_boost','pct_zero','stolen','avg_speed','pct_supersonic','pct_high_air','distance_km','demos','demoed',
-  'pct_def_third','pct_off_third','pct_behind_ball','pct_last_back','avg_dist_ball','pct_possession','aerial_touches','centres','avg_shot_speed','kickoff_wins'];
+  'pct_def_third','pct_off_third','pct_behind_ball','pct_last_back','avg_dist_ball','pct_possession','aerial_touches','centres','avg_shot_speed','kickoff_wins','whiffs','air_whiffs','pct_whiff'];
 function summarize(ms){
   const tot = (t,k) => k==='goals' && t.score!=null ? t.score : t.players.some(p=>p.stats[k]!=null) ? t.players.reduce((a,p)=>a+(p.stats[k]||0),0) : null;
   const avg = xs => { xs = xs.filter(x=>x!=null); return xs.length ? xs.reduce((a,b)=>a+b,0)/xs.length : null; };
@@ -1546,8 +1957,10 @@ function drawField(c, cw, ch){
 const SHOTW = {};
 const SHOT_OUT = { goal:'Goal', saved:'Saved', missed:'Missed', followed_up:'Followed up', teammate:'Touched by a teammate' };
 const shotClock = sec => `${Math.floor(sec/60)}:${String(Math.floor(sec%60)).padStart(2,'0')}`;
+// a shot's time on the game clock (5:00 counting down, OT +m:ss); older stored shots only have time since the replay started
+const shotTime = x => x.clock != null ? `${x.ot ? 'OT +' : ''}${shotClock(Math.max(0, x.clock))}` : shotClock(x.t);
 function shotWidgetHtml(id, sh, chips, o={}){
-  const rows = sh.map((x,i)=>`<tr class="click" data-sw="${id}" data-shot="${i}">${o.dates?`<td class="l hint">${fmtDate(x.date)}</td>`:''}<td class="${o.dates?'':'l'}">${shotClock(x.t)}</td>
+  const rows = sh.map((x,i)=>`<tr class="click" data-sw="${id}" data-shot="${i}">${o.dates?`<td class="l hint">${fmtDate(x.date)}</td>`:''}<td class="${o.dates?'':'l'}">${shotTime(x)}</td>
       <td class="nm"><span class="pdot" style="background:${o.col(x)}"></span>${esc(x.name)}</td>
       <td>${x.speed} km/h</td><td>${x.outcome==='goal' ? `<b class="${o.goalCls ? o.goalCls(x) : 'up'}">GOAL</b>` : `<span class="hint">${esc(SHOT_OUT[x.outcome]||'Shot')}</span>`}</td></tr>`).join('');
   return `<div class="row" style="flex-wrap:wrap;gap:8px">${o.title ? `<h3 style="margin:0">${o.title}</h3>` : ''}
@@ -1615,7 +2028,7 @@ function shotWidgetDraw(id, sh, o){
       : x.outcome==='saved' ? `<b>Saved</b> by <b>${esc(x.by||'?')}</b>` : x.outcome==='teammate' ? `Touched by teammate <b>${esc(x.by||'?')}</b>`
       : esc(SHOT_OUT[x.outcome]||'Shot');
     const air = x.z > 300 ? 'in the air' : x.z > 150 ? 'off the ground' : 'on the ground';
-    info.innerHTML = `<div class="row" style="gap:8px"><span class="pdot" style="background:${o.col(x)}"></span><b>${esc(x.name)}</b><span class="hint">${shotClock(x.t)}</span>${W.pin===j?'<span class="tag">pinned</span>':''}
+    info.innerHTML = `<div class="row" style="gap:8px"><span class="pdot" style="background:${o.col(x)}"></span><b>${esc(x.name)}</b><span class="hint">${shotTime(x)}</span>${W.pin===j?'<span class="tag">pinned</span>':''}
         ${o.extra ? o.extra(x) : ''}</div>
       <div style="margin-top:4px">${res}</div>
       <div class="hint" style="margin-top:4px">${x.speed} km/h off the car · hit ${air}${x.z!=null?` (${num(x.z/100,1)} m up)`:''}
@@ -1695,7 +2108,7 @@ function gameTabsHtml(m, overview){
   const ok = L && L.groups && m.teams.some(t=>t.players.some(p=>p.rstats && 'bpm' in p.rstats));
   const panes = [['overview','Scoreboard', overview]];
   if (ok) panes.push(['stats','All stats', breakdownHtml(m)], ['timeline','Timeline', momentumHtml(m) + gameRotationHtml(m)],
-                     ['field','Heatmaps & pads', gameHeatsHtml(m) + padMapHtml(m)], ['shots','Shots', shotMapHtml(m)]);
+                     ['field','Heatmaps & pads', gameHeatsHtml(m) + padMapHtml(m)], ['shots','Shots', shotMapHtml(m)], ['habits','Habits & xG', gameHabitsHtml(m)]);
   if (!panes.some(([k])=>k===GV.tab)) GV.tab = 'overview';
   return tabsHtml('gt', panes, GV.tab);
 }
@@ -1945,8 +2358,11 @@ async function ensureMeta(force){
   // Settings › "Who appears in Viewing": only those (you and whoever is being viewed always stay)
   const pick = cfg.viewing && cfg.viewing.length ? new Set(cfg.viewing) : null;
   const viewers = (s.viewers || []).filter(v => !pick || pick.has(v.key) || v.key==='me' || v.key===state.who);
+  // keep the picked session picked when the list is refreshed (it's newest first, so a new session shifts the indexes)
+  const was = state.sessList && state.sessList[state.si];
   state.meta = { playlists: s.playlists || [], viewers, allViewers: s.viewers || [], me: s.me || [], tags, sessions: sess.sessions || [] };
   state.sessList = state.meta.sessions;
+  if (was){ const i = state.sessList.findIndex(x => x.start === was.start); state.si = i >= 0 ? i : 0; }
   return state.meta;
 }
 function gbarHtml(){
@@ -2061,6 +2477,8 @@ async function renderHome(){
     <h3 class="sect">Key numbers</h3><div class="grid tiles">${keyTiles}</div>
     <div class="card" style="margin-top:12px"><div class="row" style="gap:10px;flex-wrap:wrap"><b>Form</b><span class="hint">last 10 games, newest on the right</span><div class="form">${form}</div></div></div>
     <h3 class="sect">Pinned stats</h3>${pinned ? `<div class="grid tiles">${pinned}</div>` : `<div class="card"><div class="hint">Star (☆) any stat on the Stats page to pin it here.</div></div>`}`;
+  v.insertAdjacentHTML('beforeend', '<div id="focusBox"></div>');
+  focusHtml().then(h=>{ if (state.view === 'home' && $('#focusBox')){ $('#focusBox').innerHTML = h; bindFocus(); } });
   v.querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>openGame(+el.dataset.id));
   v.querySelectorAll('[data-go-stat]').forEach(el=>el.onclick=()=>goStat(el.dataset.goStat));
   if ($('#homeSess')) $('#homeSess').onclick = () => { S.open = new Set([0]); go('sessions'); };
@@ -2068,9 +2486,9 @@ async function renderHome(){
 }
 
 // ---- Stats: every stat in one table, plus the old dashboard split into topics
-const STATS_TABS = [['all','All stats'],['overview','Overview'],['performance','Performance'],['boost','Boost & movement'],['positioning','Positioning'],['clutch','Wins & clutch'],['trends','Trends & time']];
-const TOPIC_CARDS = { overview:['overview','form','score','recent'], performance:['style','consistency','efficiency','difficulty'],
-  boost:['replay','pads'], positioning:['heat'], clutch:['clutch','winconds','factors'], trends:['when','calendar','tags','rivals'] };
+const STATS_TABS = [['all','All stats'],['overview','Overview'],['performance','Performance'],['boost','Boost & movement'],['positioning','Positioning'],['clutch','Wins & clutch'],['diagnosis','Why goals happen'],['trends','Trends & time']];
+const TOPIC_CARDS = { overview:['overview','changes','form','score','recent'], performance:['style','consistency','efficiency','difficulty'],
+  boost:['replay','pads'], positioning:['heat'], clutch:['clutch','goaltiming','winconds','factors'], diagnosis:DG_CARDS, trends:['fatigue','when','calendar','tags','rivals'] };
 async function renderStats(){
   const v = $('#view');
   v.innerHTML = `<div class="tabbar" id="statsTabs">${STATS_TABS.map(([k,l])=>`<button data-st="${k}" class="${ST.tab===k?'on':''}">${l}</button>`).join('')}
@@ -2154,7 +2572,7 @@ function go(view, before){ if (before) before(); state.view = view; syncNav(); r
 
 // ---- search: type to find any stat, card, page or player (Ctrl+K)
 const PAGES = [['Home','home'],['Stats · all stats','stats','all'],['Stats · Overview','stats','overview'],['Stats · Performance (play style, consistency, efficiency, lobby difficulty)','stats','performance'],
-  ['Stats · Boost & movement (pickup map)','stats','boost'],['Stats · Positioning (heatmap)','stats','positioning'],['Stats · Wins & clutch (close games, goal differential by minute, win conditions)','stats','clutch'],
+  ['Stats · Boost & movement (pickup map)','stats','boost'],['Stats · Positioning (heatmap)','stats','positioning'],['Stats · Wins & clutch (close games, goal differential by minute, win conditions)','stats','clutch'],['Stats · When goals happen (kickoff goals, after scoring, last 30 s)','stats','clutch'],['Stats · Fatigue & tilt (game number, losing streaks)','stats','trends'],['Stats · Why goals happen (goal causes, xG, double commits, giveaways, roles)','stats','diagnosis'],
   ['Stats · Trends & time (when you play, calendar, rivals, tags)','stats','trends'],['Games (history)','history'],['Sessions','sessions'],['People · Team & lineups','people','team'],
   ['People · Compare players','people','compare'],['Records','records'],['Settings','settings']];
 async function openSearch(){
@@ -2194,6 +2612,98 @@ document.addEventListener('click', e => { if (e.target.id==='palette') closeSear
 
 // ---- less text on screen: long explanations fold behind an ⓘ, and stat names get a one-line tooltip
 let STAT_HELP = null;
+// explanations for headers and labels on the analysis cards (matched like stat names, lower case)
+const DG_HELP = {
+"xg": "Expected goals: each shot's chance of going in (from where it was hit, how much of the goal was open, speed, height and how many defenders were goal-side), added up. A 30% shot adds 0.3. Higher = more and better chances (good when it's yours, bad when it's theirs).",
+"your team: goals vs xg": "Goals your team scored / what its shots were worth. The coloured number is goals minus xG: positive = finishing better than the chances (good), negative = missing chances you'd normally score.",
+"against: goals vs xg": "Goals the other team scored / what their shots were worth. Negative (green) = your saves and pressure stopped more than expected; positive = shots got past you more than they should have.",
+"chance quality": "The average chance each of your team's shots had of going in. Higher = better shots (closer, more of the goal open, hit harder). Theirs is shown underneath.",
+"vs xg": "Goals minus xG. Positive = scoring more than the chances were worth (good finishing); negative = missing chances. Small numbers (within about ±2) are normal luck.",
+"xg / game": "Expected goals per game: how much scoring danger this player creates. Higher is better.",
+"per shot": "The average chance of each of this player's shots going in. Higher = better shot choice; low = lots of long or tight-angle shots.",
+"biggest chances missed": "Shots with a 45%+ chance of going in that didn't. Click one to open the game.",
+"long-shot share": "Share of shots with under a 10% chance of going in. Lower is better: those shots usually just give the ball away; a pass or keeping the ball is often the better play.",
+"long shots → goals": "How many of this player's long shots (under 10% chance) actually went in.",
+"saves against how dangerous the shots were": "Not all saves are equal: saving a shot that had a 60% chance of going in is worth more than blocking a 5% one.",
+"goals saved (xg)": "The chances of the shots this player saved, added up. Saving a 60% shot adds 0.6. Higher = saving dangerous shots, not just easy ones.",
+"saved xg / game": "Goals saved (xG) per game played. Higher is better.",
+"big saves": "Saves of shots that had a 35% or better chance of going in.",
+"as last back vs xg": "When this player was the deepest defender as the shot was taken: goals let in minus what those shots were worth. Negative (green) = stopping more than expected; positive (red) = letting in more than expected. The small numbers are goals / shots faced.",
+"how many of you were goal-side when they shot": "Goal-side = between the ball and your own goal, so able to block or save. The fewer of you back, the more shots go in.",
+"nobody goal-side": "Shots taken with none of you between the ball and your goal.",
+"one goal-side": "Shots taken with exactly one of you between the ball and your goal.",
+"two goal-side": "Shots taken with two of you between the ball and your goal.",
+"three goal-side": "Shots taken with all three of you between the ball and your goal.",
+"went in on a teammate who was already going": "Read across a row: how many times that player cut in and took the ball off the column player, who was already going for it. Lower is better. Underneath: double commits (both got to the ball) and times they held back instead (higher is better).",
+"spacing": "How well you spread out. Bunching and everyone drifting to one side leave big gaps the other team can use.",
+"two of you bunched together (within ~6 m)": "Share of the time two of you were within about a car-length and a half of each other. Lower is better.",
+"all three on one side of the field": "Share of the time all three of you were on the same half of the field, left or right. Lower is better: the far side is open.",
+"how you play by the score": "The same habits split by whether your team was ahead, level or behind at that moment.",
+"went in / 5 min": "Double commits + rotation cuts per 5 minutes of play. Lower is better.",
+"held back": "When a teammate was already going for the ball, how often this player pulled out instead of going too. Higher is better.",
+"giveaways / 5 min": "Giveaways per 5 minutes of play in that score situation. Lower is better.",
+"time": "How long this player spent in that situation across these games.",
+"in the air": "Whiffs per game with the ball above ~3 m (aerial attempts that missed).",
+"% of attempts": "Whiffs ÷ every jump or flip that went for the ball. Lower is better; about 18–20% is normal in your lobbies.",
+"diagonal": "The corner spawns, both sides added together. The usual kickoff taker spawn.",
+"off-centre": "The spawns just left or right of centre, further back than the diagonals, both sides added together.",
+"back centre": "The spawn straight back in front of your goal.",
+"who took it": "The player who went for the kickoff, by where they spawned. Win % = the ball was on the other team's side 2 s later.",
+"the most": "Your win rate against the third of opponents who did the most of this in the game.",
+"the least": "Your win rate against the third of opponents who did the least of this.",
+"gap": "Win rate against the most minus against the least. Big negative = that style gives you trouble.",
+"demo-heavy teams": "Opponents whose team got the most demos in the game.",
+"aerial-heavy teams": "Opponents who touched the ball in the air the most.",
+"passing teams": "Opponents who passed the most (a touch followed by a teammate's touch).",
+"high-possession teams": "Opponents who had the ball the most (last touch).",
+"fast teams": "Opponents with the highest average car speed.",
+"main cause of each goal against": "Each goal against is checked in order and gets the first cause that fits.",
+"off the kickoff": "A goal within 10 s of a kickoff.",
+"a defender was demoed": "One of the defending team was demolished in the few seconds before the shot.",
+"double commit or rotation cut": "Two of the defending team went for the same ball just before the goal.",
+"giveaway in your half": "The defending team gave the ball away in their own or the middle third just before the goal.",
+"lost a 50/50": "The defending team lost a challenge at the ball in the seconds before the goal.",
+"rebound off a save or clear": "Scored straight after the defending team touched the ball near their goal.",
+"nobody back": "Nobody on the defending team was goal-side when the shot was taken.",
+"last defender low on boost": "The deepest defender had under 20 boost when the shot was taken.",
+"beaten by a good play": "None of the causes above: the other team just made a good play.",
+"who was involved": "The player who gave it away, made the second commit, was demoed, touched it before the rebound or was last back on low boost.",
+"rebound / follow-up": "Scored within two touches after the other team touched the ball in the attacking third.",
+"counter-attack": "Won the ball in your own half and scored within 8 s.",
+"passing play": "Two or more of the team touched the ball in the final move.",
+"solo / individual": "One player did it alone.",
+"first man": "Closest on the team to the ball: the one challenging.",
+"second man": "Second closest: ready to follow up or take the next touch.",
+"third man": "Furthest back: covering the goal (3v3).",
+"within 10 s of a kickoff": "Goals in the first 10 s of the game clock after a kickoff.",
+"within 30 s after we score": "Goals in the 30 s after your team scored: a sign of switching off after a goal (against) or keeping pressure on (for).",
+"within 30 s after they score": "Goals in the 30 s after the other team scored.",
+"last 30 s of regulation": "Goals with 30 s or less on the clock.",
+"score vs usual": "This player's score compared with their usual score in the same mode. +10% = 10% above normal.",
+"goal diff": "Average goal difference per game (goals for minus against).",
+"at some point": "Each game counts once for every score situation it passed through.",
+"last-man challenges": "Going for the ball outside your own third while you were the furthest back on your team, so nobody was behind you. Lower is better: if you lose it, they're through on goal.",
+"low-boost challenges": "Going into a challenge with under 15 boost. Lower is better: you usually lose those or can't recover after.",
+"…lost the ball": "Of those challenges, how often the other team had the ball within 3 s.",
+"…goal against": "How many of those challenges were followed by a goal against within 8 s.",
+"first-defender challenges": "When the other team brings the ball into your third, the first of you to touch it.",
+"…won": "How often the first defender kept the ball or cleared it (the other team didn't get it straight back).",
+"first defender wins it": "When the other team brings the ball into your third, how often your first challenge keeps or clears it. Higher is better.",
+"attacks nobody challenged": "Times the other team brought the ball into your third and none of you touched it within 4 s. Lower is better.",
+"demos / game": "Opponents you demolished per game.",
+"…led to a goal": "Of those demos, how many were followed by a goal for your team within 5 s.",
+"demoed / game": "Times you were demolished per game.",
+"…in your own third": "Share of the times you were demoed that happened in your own third, where it hurts most.",
+"from ↓ · to →": "Rows pass to columns. Big number = completed passes; underneath, how many led to a shot or goal within a few seconds.",
+"cuts": "Rotation cuts in this game: you took the ball off a teammate who was already going for it.",
+"first-defender": "Times this player was the first to challenge when the other team brought the ball into your third.",
+"best chances": "This game's shots with the highest chance of going in, and what happened.",
+"why each goal against went in": "The main cause of each goal against in this game, and who was involved.",
+"diagonal left": "The corner spawn on your left, from your car facing the other team's goal.",
+"diagonal right": "The corner spawn on your right, from your car facing the other team's goal.",
+"off-centre left": "The spawn just left of centre (back left), from your car facing the other team's goal.",
+"off-centre right": "The spawn just right of centre (back right), from your car facing the other team's goal."
+};
 api('/api/stat_help').then(h => { STAT_HELP = h; tidy(document.body); }).catch(()=>{});
 function tidy(root){
   root.querySelectorAll('.card > .hint, .card > div > .hint, section > .hint, .rc-mid > .hint, .rc-left > .hint').forEach(h => {
@@ -2204,11 +2714,12 @@ function tidy(root){
     d.innerHTML = '<summary>ⓘ How this works</summary>';
     h.replaceWith(d); d.appendChild(h); h.style.marginTop = '4px';
   });
-  if (!STAT_HELP) return;
-  root.querySelectorAll('td.l, th, .label, .k, .pcrow .k').forEach(el => {
-    if (el.dataset.help || el.title || el.dataset.tip) return;
-    const t = el.textContent.replace(/[★☆↓]/g,'').replace(/\s*(\/ game|per game|in a game)$/i,'').replace(/^(most|total)\s+/i,'').trim().toLowerCase();
-    const h = STAT_HELP[t]; if (!h) return;
+  root.querySelectorAll('td.l, th, .label, .k, .pcrow .k, .md-lab, .card > h3').forEach(el => {
+    if (el.dataset.help) return;
+    if (el.title || el.dataset.tip){ if (el.matches('th, .label')){ el.dataset.help = 1; el.classList.add('has-help'); } return; }
+    const raw = el.textContent.replace(/[★☆↓]/g,'').trim().toLowerCase();
+    const t = raw.replace(/\s*(\/ game|per game|in a game)$/i,'').replace(/^(most|total)\s+/i,'').trim();
+    const h = DG_HELP[raw] || DG_HELP[t] || (STAT_HELP && STAT_HELP[t]); if (!h) return;
     el.dataset.help = 1; el.title = h; el.classList.add('has-help');
   });
 }
@@ -2227,8 +2738,8 @@ async function poll(){
     const st = await api('/api/status');
     $('.dot').classList.toggle('busy', st.running);
     $('#statusText').textContent = st.running ? 'Checking for new replays…' : `${st.replays} replays · watching ${st.folders.length} folder${st.folders.length===1?'':'s'}`;
-    if (lastNew !== null && st.last_new && st.last_new !== lastNew){ toast('New match added'); if (!$('#modal').classList.contains('on') && state.view!=='settings') render(); }
-    else if (lastDone !== null && !st.running && lastDone && state.view!=='settings' && !$('#modal').classList.contains('on')) render();
+    // redraw only when a match was actually added (not after every folder check), and keep the scroll position
+    if (lastNew !== null && st.last_new && st.last_new !== lastNew){ toast('New match added'); state.meta = null; if (!$('#modal').classList.contains('on') && state.view!=='settings') softRender(); }
     lastNew = st.last_new || 0; lastDone = st.running ? 1 : 0;
   } catch(e){ $('#statusText').textContent = 'Server not reachable'; }
   setTimeout(poll, 3000);

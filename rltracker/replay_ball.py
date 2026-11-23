@@ -75,6 +75,18 @@ def _flight(p, v, s, horizon=5.0, h=1 / 60):
     return None
 
 
+def ot_mask(clock: np.ndarray) -> np.ndarray:
+    """Frames in overtime: the game clock reaches 0:00 and then counts up again."""
+    ot = np.zeros(len(clock), bool)
+    zero = np.flatnonzero(clock <= 0)
+    if len(zero):
+        z0 = int(zero[0])
+        later = np.flatnonzero(clock[z0:] > 0)
+        if len(later):
+            ot[z0 + int(later[0]) - 1:] = True
+    return ot
+
+
 def compute(meta: dict, A: dict, events: list, dt: np.ndarray, touch_list: list[tuple[int, int]]):
     """→ (per-player stats, per-team stats {team: {...}}, shots [...])"""
     P = A["car_state"].shape[1] if A["car_state"].ndim == 2 else 0
@@ -84,6 +96,8 @@ def compute(meta: dict, A: dict, events: list, dt: np.ndarray, touch_list: list[
     bpos = A["ball_pos"].astype(np.float64)
     bvel = A["ball_vel"].astype(np.float64)
     F = len(t)
+    clock = A["clock"].astype(np.int64) if "clock" in A else None
+    ot = ot_mask(clock) if clock is not None else None
     teams = [meta["players"][i].get("team") for i in range(P)]
     names = [meta["players"][i].get("name") for i in range(P)]
     sgn = [(-1.0 if tm == 1 else 1.0) for tm in teams]  # team-relative: own goal at -y
@@ -159,6 +173,9 @@ def compute(meta: dict, A: dict, events: list, dt: np.ndarray, touch_list: list[
         p, v = after(f)
         sh = {"t": round(float(t[f] - t[0]), 1), "frame": int(f), "player": i, "name": names[i], "team": teams[i],
               "x": int(bpos[f, 0]), "y": int(bpos[f, 1]), "speed": round(float(np.linalg.norm(v)) * KMH), "goal": False}
+        if clock is not None:
+            sh["clock"] = int(clock[f])
+            sh["ot"] = bool(ot[f])
         if not exact:
             sh["est"] = True  # location estimated (older recording)
         st[i]["shots"].append(sh)
@@ -365,6 +382,8 @@ def compute(meta: dict, A: dict, events: list, dt: np.ndarray, touch_list: list[
                     s.update(x=int(bpos[f, 0]), y=int(bpos[f, 1]), z=int(bpos[f, 2]),
                              speed=round(float(np.linalg.norm(bvel[min(f + 3, F - 1)])) * KMH),
                              t=round(float(t[f] - t[0]), 1))
+                    if clock is not None:
+                        s.update(clock=int(clock[f]), ot=bool(ot[f]))
                 else:
                     f = f5
                     s["partial"] = True
@@ -380,6 +399,17 @@ def compute(meta: dict, A: dict, events: list, dt: np.ndarray, touch_list: list[
             s["by"] = by
         s["z"] = int(bpos[f, 2])
         s["flight_s"] = round(float(t[end] - t[f]), 1)
+    for s in shots:  # the other team's shape at the moment of the shot
+        f, D = s["frame"], 1 - s["team"]
+        sd = 1.0 if D == 0 else -1.0  # the defending team's own goal at -y
+        ds = [k for k in range(P) if teams[k] == D and cpresent[min(f, F - 1), k]]
+        back = [k for k in ds if cpos[f, k, 1] * sd < bpos[f, 1] * sd]
+        s["def_back"] = len(back)
+        s["def_n"] = len(ds)
+        if back:
+            last = min(back, key=lambda k: cpos[f, k, 1] * sd)
+            s["def_goal_dist"] = int(max(0.0, cpos[f, last, 1] * sd + FIELD_Y))
+            s["def_last"] = names[last]
     for s in shots:
         s.pop("frame", None)
         s.pop("player", None)

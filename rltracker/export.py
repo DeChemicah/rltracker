@@ -34,7 +34,7 @@ def to_csv() -> str:
                 w.writerow([m["id"], m["played_at"], m.get("playlist"), int(bool(m.get("ranked"))),
                             int(bool(m.get("is_final"))), m.get("result") or "", int(bool(m.get("hidden"))),
                             int(bool(m.get("duplicate_of"))), side, t.get("name"), t.get("color"), t.get("score"),
-                            int(bool(t.get("winner"))), p["name"], p.get("alias") or "", int(p.get("key") == "me"),
+                            int(stats._result_for(m, ti) == "W"), p["name"], p.get("alias") or "", int(p.get("key") == "me"),
                             int(m.get("mvp") == p["name"]), *[p["stats"].get(k, "") for k in TRACKED_STATS]])
     return buf.getvalue()
 
@@ -46,9 +46,9 @@ def to_json() -> str:
             "id": m["id"], "played_at": m["played_at"], "mode": m.get("playlist"), "ranked": bool(m.get("ranked")),
             "finished": bool(m.get("is_final")), "your_result": m.get("result"), "hidden": bool(m.get("hidden")),
             "duplicate_of": m.get("duplicate_of"), "mvp": m.get("mvp"),
-            "teams": [{"name": t.get("name"), "color": t.get("color"), "score": t.get("score"), "won": bool(t.get("winner")),
+            "teams": [{"name": t.get("name"), "color": t.get("color"), "score": t.get("score"), "won": stats._result_for(m, ti) == "W",
                        "players": [{"name": p["name"], "alias": p.get("alias"), "is_you": p.get("key") == "me",
                                     "stats": {k: p["stats"].get(k) for k in TRACKED_STATS}} for p in t["players"]]}
-                      for t in m["teams"]],
+                      for ti, t in enumerate(m["teams"])],
         })
     return json.dumps({"app": "RL Tracker", "stats": TRACKED_STATS, "matches": out}, indent=2)

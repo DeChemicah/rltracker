@@ -220,3 +220,33 @@ details.about summary:hover{color:var(--text)}
 
 .updbadge{background:color-mix(in srgb,var(--win) 22%,var(--panel2));border:1px solid var(--win);color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer;font:600 13px var(--body,inherit);white-space:nowrap}
 .updbadge[hidden]{display:none}
+/* patterns: when goals happen, fatigue, day x time grid */
+.gt-lab{width:190px}
+.gt-bar{flex:1;display:flex;height:14px;min-width:0}
+.gt-bar.l{justify-content:flex-end}
+.gt-bar i{display:block;height:100%;border-radius:3px}
+.gt-bar.l i{background:var(--loss)}.gt-bar.r i{background:var(--win)}
+.ftable.pat th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600;text-align:center}
+.ftable.pat td{text-align:center}.ftable.pat td.l,.ftable.pat th.l{text-align:left}
+.hmgrid{border-collapse:separate;border-spacing:4px}
+.hmgrid th{font-size:12px;color:var(--muted);font-weight:600}
+.hmgrid td.hm{text-align:center;border-radius:6px;padding:9px 12px;font-weight:700;min-width:80px;color:var(--text);border:1px solid var(--line-hi)}
+.hmgrid td.hm b{font-size:17px}
+.hmgrid td.hm small{display:block;font-weight:600;font-size:13px;color:var(--text);opacity:.9;margin-top:2px}
+.wkvs td.better{color:var(--win)}.wkvs td.worse{color:var(--loss)}
+@media (max-width:640px){.gt-lab{width:110px;font-size:12px}}
+/* why goals happen */
+.hb{height:12px;background:var(--panel3);border-radius:3px;overflow:hidden}
+.hb i{display:block;height:100%;background:var(--loss);border-radius:3px}
+.hb.n i{background:var(--muted)}
+.givewrap{display:grid;grid-template-columns:minmax(160px,260px) 1fr;gap:16px;align-items:start}
+.givesvg{width:100%;max-width:260px}
+@media (max-width:640px){.givewrap{grid-template-columns:1fr}}
+.focus .fbars{display:flex;align-items:flex-end;gap:3px;height:44px;margin:6px 0 2px}
+.focus .fbars i{flex:1;background:var(--panel3);border-radius:2px 2px 0 0;min-height:2px}
+.focus .fbars i.on{background:var(--orange)}
+[id^="dg_"] .card{overflow-x:auto}
+[id^="dg_"] td.l{white-space:normal}
+@media (max-width:640px){[id^="dg_"] .hb{min-width:60px}}
+.kspawn th.ks-all{border-left:1px solid var(--line-hi)}
+.kspawn th.ks-side{font-size:11px;color:var(--muted)}

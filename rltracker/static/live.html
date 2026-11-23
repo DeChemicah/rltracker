@@ -49,6 +49,7 @@
   .gr .chips span{font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;color:var(--muted)}
   .gr .chips b{color:var(--text)}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;align-items:start}
+.nudge{margin:8px 0;padding:8px 12px;border-left:4px solid var(--orange,#f39c12);background:rgba(243,156,18,.12);border-radius:6px;font-size:13px}
 </style>
 </head>
 <body>
@@ -110,6 +111,7 @@ async function tick(){
         <div class="card"><span>Avg score</span><b>${a.score==null ? "–" : Math.round(a.score)}</b></div>
         <div class="card"><span>Goals ${s.goals_for}–${s.goals_against}</span><b class="${s.goals_for>=s.goals_against?'up':'down'}">${s.goals_for-s.goals_against>=0?'+':''}${s.goals_for-s.goals_against}</b></div>
       </div>
+      ${d.nudge ? `<div class="nudge">${esc(d.nudge)}</div>` : ''}
       <div class="games">${s.rows.map(r=>`<i class="${r.result}" title="${t(r.t)} ${r.for}–${r.against}">${r.result}</i>`).join('')}</div>
       ${d.last_game ? `<div class="cards">${gameCard(d.last_game)}${d.last_team ? teamCard(d.last_team, d.last_game) : ''}</div>` : `<div class="card last"><span class="hint">Last game · ${t(last.t)}</span><br>
         <b>${last.result==='W'?'Won':'Lost'} ${last.for ?? '?'}–${last.against ?? '?'}</b> · ${last.my.score} pts</div>`}

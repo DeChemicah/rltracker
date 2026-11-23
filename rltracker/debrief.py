@@ -178,6 +178,41 @@ def _team(games: list, D: dict, sm: dict, start: str, end: str) -> dict:
                   "This stretch of the clock cost you the most goals.",
                   "Take fewer risks in that minute; the third player stays back until your team has the ball.")
 
+    # 7. when goals happen: off the kickoff, right after a goal
+    gt = {w["key"]: w for w in (D.get("goal_timing") or {}).get("windows", [])}
+    for key, title, txt, tip in (
+            ("kickoff", "Stop conceding off the kickoff", "Goals within 10 s of a kickoff went against you.",
+             "The player not going for the ball covers back post, and whoever takes the kickoff goes for a safe 50/50, not a pinch past the opponent."),
+            ("after_for", "Reset after you score", "You conceded soon after scoring.",
+             "After a goal, everyone is back in the same kickoff spots: go through the routine, don't relax on the restart."),
+            ("after_against", "Don't concede twice in a row", "One goal against was often followed by another within 30 s.",
+             "After conceding, play the next kickoff safe and keep two players back until you have the ball.")):
+        w = gt.get(key)
+        if w and w["against"] >= 2 and w["against"] - w["for"] >= 2:
+            _find(fs, (w["against"] - w["for"]) * 6, title, [_fact(w["label"], f"{w['for']} for – {w['against']} against", "down")], txt, tip)
+
+    # 9. how the goals against happened (from the goal causes)
+    from . import diagnosis as DGN
+    gb = DGN.goals_breakdown([m for m in games if m.get("replay")], None)
+    fix = [c for c in gb["causes"] if c["key"] != "other" and c["goals"] >= 3 and (c["pct"] or 0) >= 18]
+    if fix:
+        c = max(fix, key=lambda c: c["goals"])
+        _find(fs, (c["pct"] or 0) * 1.6, CAUSE_TITLE.get(c["key"], c["label"]),
+              [_fact("Goals against", f"{c['goals']} of {gb['against']} ({c['pct']:.0f}%)", "down")] +
+              [_fact(p["label"], f"involved in {p['goals']}", "") for p in gb["involved"][:3] if p["goals"]],
+              f"\"{c['label']}\" was the most common reason a goal went in against you.", CAUSE_TIP.get(c["key"], ""))
+
+    # 8. fading late in the session
+    if n >= 6 and (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() < 20 * 3600:  # one session, not a week
+        third = max(2, n // 3)
+        a_ = sum(m["result"] == "W" for m in games[:third]) / third
+        b_ = sum(m["result"] == "W" for m in games[-third:]) / third
+        if a_ - b_ >= 0.25:
+            _find(fs, (a_ - b_) * 60, "Stop earlier, or take a break",
+                  [_fact(f"First {third} games", f"{round(a_ * 100)}% wins", "up"), _fact(f"Last {third} games", f"{round(b_ * 100)}% wins", "down")],
+                  "Results dropped off as the session went on.",
+                  "Take a 10-minute break around the middle of long sessions, or end the session when you notice slow rotations and missed touches.")
+
     # what went well
     late = [x for x in bm if x["minute"] in (4, 5)]
     ld = sum(x["diff"] for x in late)
@@ -204,14 +239,40 @@ def _team(games: list, D: dict, sm: dict, start: str, end: str) -> dict:
             "clutch": {k: c[k] for k in ("close", "overtime", "scored_first", "conceded_first")}}
 
 
+CAUSE_TITLE = {"kickoff": "Stop conceding off the kickoff", "demo": "Protect the last defender from demos",
+               "double_commit": "Stop double committing", "giveaway": "Stop giving the ball away in your half",
+               "fifty": "Win (or avoid) the dangerous 50/50s", "rebound": "Deal with rebounds", "nobody_back": "Always keep someone back",
+               "low_boost": "Don't defend on an empty tank"}
+CAUSE_TIP = {
+    "kickoff": "Agree who goes for the kickoff and who covers back post, and keep the third player back until the kickoff is decided.",
+    "demo": "When you're last back, stay away from the walls and keep moving; a teammate can bump the attacker coming for you.",
+    "double_commit": "Call it: whoever is closer and facing the ball goes, the other holds and covers. If you're not sure you're first, you're second.",
+    "giveaway": "In your own half, clear to the side walls or corners instead of the middle, and don't dribble under pressure.",
+    "fifty": "Only challenge a 50/50 if a teammate is behind you; otherwise shadow and wait for them to make a mistake.",
+    "rebound": "After a save or clear, the next player rotates to the back post quickly instead of following the ball.",
+    "nobody_back": "The player furthest from the ball always stays goal-side; never all three in front of the ball.",
+    "low_boost": "Take small pads on the way back and don't go for a challenge with under 20 boost when you're last back.",
+}
+
+
 # ---------------------------------------------------------------- one player
 PLAYER_KEYS = ["score", "goals", "assists", "saves", "shots", "demos", "shooting_pct", "goal_part", "bpm", "pct_zero", "pct_full",
                "overfill", "pct_supersonic", "pct_behind_ball", "pct_last_back", "pct_first_forward", "avg_dist_ball",
-               "aerial_touches", "kickoffs", "kickoff_wins", "demoed", "avg_shot_speed"]
+               "aerial_touches", "kickoffs", "kickoff_wins", "demoed", "avg_shot_speed", "fifty_win_pct", "passes", "pct_wall",
+               "double_commits", "rotation_cuts", "pct_held_back", "giveaways", "recovery_s", "touch_share", "boost_def", "pct_whiff"]
 
 
 # advice for a stat that's below the lobby
 LOBBY_TIPS = {
+    "double_commits": "If a teammate is already going for the ball, hold back and cover instead; when in doubt, you're second.",
+    "pct_whiff": "Slow down before the touch: arrive a moment early and on the ground, and jump later rather than flipping at a ball that's still moving away.",
+    "rotation_cuts": "If a teammate is already going for the ball, let them have it and fill the space behind; only take it if they call it or clearly miss.",
+    "pct_held_back": "When you see a teammate already driving at the ball, peel off: go back post or to midfield for the next touch instead of joining in.",
+    "giveaways": "In your own half, play the ball to the side walls or corners and don't dribble under pressure.",
+    "recovery_s": "When you're caught in front of the ball, turn and boost back to the far post straight away instead of turning at the ball.",
+    "boost_def": "Pick up small pads on the way back so you have boost when the ball comes into your third.",
+    "fifty_win_pct": "In a 50/50, flip into the ball with your car's nose low and aim at their side wall or corner instead of straight at the opponent.",
+    "passes": "Look up before you hit: a soft touch towards a teammate or the back post keeps the ball, a hard clear usually gives it away.",
     "goals": "Get into scoring spots more: follow up your teammates' shots and wait at the back post for rebounds.",
     "shots": "Get into scoring spots more: follow up your teammates' shots and wait at the back post for rebounds.",
     "shooting_pct": "Set up power or a corner with an extra touch, and pass across when the shot is likely to be saved.",
@@ -230,8 +291,9 @@ LOBBY_TIPS = {
     "demoed": "Check behind you when slow or on the ground near opponents.",
 }
 LOBBY_KEYS = ["goals", "shots", "shooting_pct", "saves", "assists", "score", "ball_hits", "pct_possession", "avg_shot_speed",
-              "goal_part", "centres", "clears", "bpm", "kickoff_wins", "aerial_touches"]
-TEAM_KEYS = ["score", "goals", "assists", "saves", "shots", "ball_hits", "demos", "centres", "clears", "aerial_touches"]
+              "goal_part", "centres", "clears", "bpm", "kickoff_wins", "aerial_touches", "fifty_win_pct", "passes",
+              "double_commits", "rotation_cuts", "pct_held_back", "giveaways", "recovery_s", "boost_def", "pct_whiff"]
+TEAM_KEYS = ["score", "goals", "assists", "saves", "shots", "ball_hits", "demos", "centres", "clears", "aerial_touches", "passes"]
 
 
 def _player(key: str, label: str, start: str, end: str, tables: dict, labels: dict) -> dict:

@@ -12,8 +12,10 @@ import numpy as np
 from . import replay_extract as X
 from . import replay_position as RP
 from . import replay_ball as RB
+from . import replay_plays as PL
+from . import replay_more as MO
 
-STATS_VERSION = 11  # 11: powerslide count, crossbar hits · 10: fastest ball hit per player · 9: every shot the game counted (shot moments from the replay, or ranked up to the scoreboard count) · 8: goal timeline, overtime, momentum · 7: each shot's ball path + outcome · 6: live time only (no kickoff countdowns / goal celebrations), boost pads by location · 5: demos as a main stat · 2: ball hits from touches · 3: positioning, rotation, heatmaps · 4: ball play, shots, kickoffs
+STATS_VERSION = 28  # 28: game clock on each shot · 27: kickoff spawn side · 26/25: aimed passes and completion · 24/23: last-man / low-boost / first-defender challenges, demos and passes in detail · 22/21/20/19/18: who cuts whom, by score, spacing, whiffs, kickoffs by spawn, defence at shots · 17/16/15/14: double commits from runs at the ball, rotation cuts, held back % · 13: team play (goal causes and kinds, double commits, giveaways, recovery, roles, boost when the ball comes in) · 12: % on wall, 50/50s and won, passes · 11: powerslide count, crossbar hits · 10: fastest ball hit per player · 9: every shot the game counted (shot moments from the replay, or ranked up to the scoreboard count) · 8: goal timeline, overtime, momentum · 7: each shot's ball path + outcome · 6: live time only (no kickoff countdowns / goal celebrations), boost pads by location · 5: demos as a main stat · 2: ball hits from touches · 3: positioning, rotation, heatmaps · 4: ball play, shots, kickoffs
 SUPERSONIC = 2190      # uu/s (game threshold is 2200; small margin for rounding)
 BOOST_SPEED = 1410     # uu/s: top speed without boosting
 GROUND_Z = 25          # car resting height is ~17
@@ -92,16 +94,7 @@ def timeline(meta: dict, A: dict, events: list[dict], dt: np.ndarray, touch_list
     F = len(t)
     if not F:
         return {"goals": [], "overtime": False, "momentum": []}
-    zero = np.flatnonzero(clock <= 0)
-    ot_from = None
-    if len(zero):
-        z0 = int(zero[0])
-        later = np.flatnonzero(clock[z0:] > 0)
-        if len(later):  # the clock counts up again after 0:00 → overtime
-            ot_from = z0 + int(later[0]) - 1
-    ot = np.zeros(F, bool)
-    if ot_from is not None:
-        ot[ot_from:] = True
+    ot = RB.ot_mask(clock)
     teams = [p.get("team") for p in meta["players"]]
     names = [p.get("name") for p in meta["players"]]
     goals = []
@@ -133,7 +126,7 @@ def timeline(meta: dict, A: dict, events: list[dict], dt: np.ndarray, touch_list
         momentum.append({"b": b, "ot": is_ot, "clock": int(start), "live_s": round(live, 1),
                          "blue_attack": round(100 * in_orange / live, 1),          # ball in orange's half = blue attacking
                          "blue_poss": round(100 * float((w * (last_team == 0)).sum()) / pt, 1) if pt > 1 else None})
-    return {"goals": goals, "overtime": ot_from is not None, "momentum": momentum}
+    return {"goals": goals, "overtime": bool(ot.any()), "momentum": momentum}
 
 
 def live_mask(A: dict, events: list[dict]) -> np.ndarray:
@@ -159,23 +152,24 @@ GROUPS = {
               ("big_pads", "Big pads"), ("small_pads", "Small pads"), ("stolen", "Pads stolen"), ("overfill", "Boost wasted")],
     "movement": [("avg_speed", "Avg speed"), ("pct_supersonic", "% supersonic"), ("pct_boost_speed", "% boost speed"),
                  ("pct_slow", "% slow"), ("pct_ground", "% on ground"), ("pct_low_air", "% low air"), ("pct_high_air", "% high air"),
-                 ("jumps", "Jumps"), ("double_jumps", "Double jumps"), ("dodges", "Dodges"), ("powerslides", "Powerslides"), ("powerslide_s", "Powerslide (s)"),
+                 ("jumps", "Jumps"), ("double_jumps", "Double jumps"), ("dodges", "Dodges"), ("powerslides", "Powerslides"), ("powerslide_s", "Powerslide (s)"), ("pct_wall", "% on wall"),
                  ("distance_km", "Distance (km)")],
     "demos": [("demos", "Demos"), ("demoed", "Demoed")],
-    "ball": RB.GROUP,
+    "ball": RB.GROUP + [("fifty_fifties", "50/50s"), ("fifty_wins", "50/50s won"), ("passes", "Passes")],
     "positioning": RP.GROUP,
+    "teamplay": PL.GROUP + MO.GROUP,
     "touches": [("ball_hits", "Ball hits (from replay)")],
 }
 
 # Which way is "better" when comparing (default: higher is better).
-LOWER_BETTER = {"pct_zero", "overfill", "demoed", "pct_double_up", "pct_no_last_back"}
-ROTATION = RP.ROTATION + RB.TEAM  # team-level, stored on each match team as "rotation"
+LOWER_BETTER = {"pct_zero", "overfill", "demoed", "pct_double_up", "pct_no_last_back"} | PL.LOWER_BETTER | MO.LOWER_BETTER
+ROTATION = RP.ROTATION + RB.TEAM + MO.TEAM  # team-level, stored on each match team as "rotation"
 NEUTRAL = {"kickoffs", "clears", "tracked_shots", "pct_def_third", "pct_neutral_third", "pct_off_third", "pct_behind_ball", "pct_last_back", "pct_first_forward",
            "avg_dist_ball", "avg_dist_mate", "pct_double_back", "pct_all_back",
            "avg_boost", "pct_full", "small_pads", "pct_boost_speed", "pct_slow", "pct_ground", "pct_low_air",
-           "pct_high_air", "jumps", "double_jumps", "powerslide_s", "powerslides", "crossbars"}
+           "pct_high_air", "jumps", "double_jumps", "powerslide_s", "powerslides", "crossbars", "pct_wall", "fifty_fifties"} | PL.NEUTRAL | MO.NEUTRAL
 # Single-game records worth showing (highest value wins).
-RECORD_KEYS = ["max_hit_speed", "crossbars", "powerslides", "centres", "max_shot_speed", "max_goal_speed", "aerial_touches", "pct_possession", "clears", "bpm", "big_pads", "stolen",
+RECORD_KEYS = ["passes", "fifty_wins", "max_hit_speed", "crossbars", "powerslides", "centres", "max_shot_speed", "max_goal_speed", "aerial_touches", "pct_possession", "clears", "bpm", "big_pads", "stolen",
                "avg_speed", "pct_supersonic", "distance_km", "pct_high_air", "dodges"]  # demos: a main stat now (stat_records)
 KEYS = [k for grp in GROUPS.values() for k, _l in grp if k != "ball_hits"]  # ball hits live in the normal stats
 LABELS = {k: l for grp in GROUPS.values() for k, l in grp}
@@ -195,8 +189,8 @@ def meta() -> dict:
 
 
 # How a team's value is built from its players' values in one game (anything else: the average).
-TEAM_SUM = {"big_pads", "small_pads", "stolen", "overfill", "jumps", "double_jumps", "dodges", "powerslide_s", "powerslides", "crossbars", "distance_km",
-            "demos", "demoed", "aerial_touches", "pct_possession", "clears", "centres", "kickoffs", "kickoff_wins"}
+TEAM_SUM = {"big_pads", "small_pads", "stolen", "overfill", "jumps", "double_jumps", "dodges", "powerslide_s", "powerslides", "crossbars", "fifty_fifties", "fifty_wins", "passes", "distance_km",
+            "demos", "demoed", "aerial_touches", "pct_possession", "clears", "centres", "kickoffs", "kickoff_wins"} | PL.TEAM_SUM | MO.TEAM_SUM
 TEAM_MAX = {"max_hit_speed", "max_shot_speed", "max_goal_speed"}
 
 
@@ -257,7 +251,67 @@ def touches(A: dict) -> list[tuple[int, int]]:
     return out
 
 
-TOUCH_DIST = 230  # car centre to ball centre (ball radius ~93 + car half-length ~60-80, plus a frame of motion)
+TOUCH_DIST = 230
+
+WALL_X, WALL_Y, CORNER, CEIL_Z = 4020, 5050, 7950, 1950  # field walls at x ±4096, y ±5120, ceiling 2044
+
+
+def on_wall(p: np.ndarray) -> np.ndarray:
+    """Car on (or right against) a side wall, back wall, corner or the ceiling, not on the floor."""
+    x, y, z = np.abs(p[:, 0]), np.abs(p[:, 1]), p[:, 2]
+    return (z > 60) & ((x > WALL_X) | ((y > WALL_Y) & ((x > 950) | (z > 700))) | (x + y > CORNER) | (z > CEIL_Z))
+
+
+FIFTY_DIST = 300  # an opponent this close to the ball at a touch makes it a 50/50
+PASS_GAP_S = 3.0
+PASS_MIN_DIST = 700
+
+
+def contests(meta: dict, A: dict, touch_list: list) -> dict[int, dict]:
+    """Per player: 50/50s (a touch while an opponent is also at the ball), 50/50s won (the ball
+    goes your team's way over the next second), and passes (your touch is followed by a
+    teammate's touch within 3 s, ball moved 7 m+, nobody else touched it in between)."""
+    teams = [p.get("team") for p in meta["players"]]
+    bpos = A["ball_pos"].astype(np.float64)
+    cpos = A["car_pos"].astype(np.float64)
+    present = (A["car_state"] & X.PRESENT) > 0
+    t = A["t"].astype(np.float64)
+    F = len(t)
+    out = {i: {"fifty_fifties": 0, "fifty_wins": 0, "passes": 0} for i in range(len(teams))}
+    last_contest = -9.0
+    for f, i in touch_list:
+        if f >= F or i >= len(teams) or teams[i] is None:
+            continue
+        b = bpos[f]
+        if abs(b[0]) < 300 and abs(b[1]) < 300 and b[2] < 200:  # kickoffs are their own stat
+            continue
+        if t[f] - last_contest < 0.5:
+            continue
+        d = np.linalg.norm(cpos[f] - b, axis=1)
+        rivals = [j for j in range(len(teams)) if teams[j] is not None and teams[j] != teams[i] and present[f, j] and d[j] < FIFTY_DIST]
+        if not rivals:
+            continue
+        last_contest = t[f]
+        j = min(rivals, key=lambda j: d[j])
+        g = int(np.searchsorted(t, t[f] + 1.0))
+        g = min(g, F - 1)
+        dy = bpos[g, 1] - b[1]
+        winner = None
+        if abs(dy) > 300:
+            winner = i if (dy > 0) == (teams[i] == 0) else j
+        for k in (i, j):
+            out[k]["fifty_fifties"] += 1
+        if winner is not None:
+            out[winner]["fifty_wins"] += 1
+    tl = sorted(touch_list)
+    for (f1, i), (f2, j) in zip(tl, tl[1:]):
+        if i == j or i >= len(teams) or j >= len(teams) or teams[i] is None or teams[i] != teams[j]:
+            continue
+        if f2 >= F or t[f2] - t[f1] > PASS_GAP_S:
+            continue
+        if np.linalg.norm(bpos[f2, :2] - bpos[f1, :2]) >= PASS_MIN_DIST:
+            out[i]["passes"] += 1
+    return out  # car centre to ball centre (ball radius ~93 + car half-length ~60-80, plus a frame of motion)
 
 
 def compute(track_path: str) -> dict:
@@ -335,14 +389,28 @@ def compute(track_path: str) -> dict:
             "jumps": _rising(state[:, i], X.JUMP), "double_jumps": _rising(state[:, i], X.DOUBLE_JUMP), "dodges": _rising(state[:, i], X.DODGE),
             "powerslide_s": round(float((w * (((state[:, i] & X.HANDBRAKE) > 0) & (z <= GROUND_Z))).sum()), 1),
             "powerslides": _count_starts(((state[:, i] & X.HANDBRAKE) > 0) & (z <= GROUND_Z) & (w > 0), t),
+            "pct_wall": frac(on_wall(pos[:, i])),
             "distance_km": round(float(np.linalg.norm(np.diff(pos[:, i], axis=0), axis=1)[present[1:] & present[:-1]].clip(0, 500).sum()) / 100000, 2),
             "demos": sum(1 for e in demos if e["attacker"] == i), "demoed": sum(1 for e in demos if e["victim"] == i),
             "ball_hits": sum(1 for _f, pi in touch_list if pi == i),
             "pads": pad_counts if pads else None,
         })
+    plays, goal_recs, work = PL.compute(meta, A, events, dt, touch_list)
+    more, team_more, match_more = MO.compute(meta, A, events, dt, work)
+    for i, r in enumerate(out):
+        if "bpm" in r and i < len(plays):
+            r.update(plays[i])
+        if "bpm" in r and i < len(more):
+            r.update(more[i])
+    con = contests(meta, A, touch_list)
+    for i, r in enumerate(out):
+        if "bpm" in r and i in con:
+            r.update(con[i])
     pos_players, rotation, heats = RP.compute(meta, A, dt)
     ball_players, ball_team, shots = RB.compute(meta, A, events, dt, touch_list)
     for tm, d in ball_team.items():
+        rotation.setdefault(tm, {}).update(d)
+    for tm, d in team_more.items():
         rotation.setdefault(tm, {}).update(d)
     for i, r in enumerate(out):
         if i < len(ball_players) and "bpm" in r:
@@ -352,7 +420,7 @@ def compute(track_path: str) -> dict:
             if heats[i]:
                 r["heat"] = heats[i]
     return {"version": STATS_VERSION, "seconds": round(float(t[-1] - t[0]), 1) if len(t) else 0, "players": out,
-            "rotation": rotation, "shots": shots, "timeline": timeline(meta, A, events, dt, touch_list)}
+            "rotation": rotation, "shots": shots, "timeline": timeline(meta, A, events, dt, touch_list), "plays": goal_recs, **match_more}
 
 
 def attach(match: dict, track_path: str) -> dict:
@@ -364,7 +432,15 @@ def attach(match: dict, track_path: str) -> dict:
         for p in t.get("players", []):
             r = by_id.get(p.get("platform_id")) or by_name.get(p.get("replay_name") or p.get("name"))
             if r:
-                p["rstats"] = {k: v for k, v in r.items() if k not in ("name", "id", "team", "heat", "pads")}
+                p["rstats"] = {k: v for k, v in r.items() if k not in ("name", "id", "team", "heat", "pads", "give_xy", "by_state", "chal")}
+                if r.get("chal"):
+                    p["rchal"] = r["chal"]
+                if r.get("by_state"):
+                    p["rstate"] = r["by_state"]
+                if r.get("give_xy"):
+                    p["rgive"] = r["give_xy"]
+                else:
+                    p.pop("rgive", None)
                 if r.get("heat"):
                     p["rheat"] = r["heat"]
                 if r.get("pads"):
@@ -388,5 +464,11 @@ def attach(match: dict, track_path: str) -> dict:
     match["rgoals"] = tl.get("goals") or []
     match["overtime"] = bool(tl.get("overtime"))
     match["rmomentum"] = tl.get("momentum") or []
+    match["rplays"] = rs.get("plays") or []
+    match["rconf"] = rs.get("rconf") or []
+    match["rkick"] = rs.get("rkick") or []
+    match["rdemos"] = rs.get("rdemos") or []
+    match["rpass"] = rs.get("rpass") or []
+    match["raim"] = rs.get("raim") or []
     match["rstats_version"] = STATS_VERSION
     return match

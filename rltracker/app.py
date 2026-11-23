@@ -63,6 +63,9 @@ def api_match(mid):
     m = stats.match_detail(mid)
     if not m:
         abort(404)
+    if m.get("rshots"):
+        from . import diagnosis
+        m["xg"] = diagnosis.game_xg(m)
     return jsonify(m)
 
 
@@ -93,6 +96,26 @@ def api_sessions():
 def api_session_report():
     from . import debrief
     return jsonify(debrief.session_report(request.args.get("start", ""), request.args.get("end", "")))
+
+
+@app.get("/api/diagnosis")
+def api_diagnosis():
+    from . import diagnosis
+    a = request.args
+    return jsonify(diagnosis.diagnose(size=a.get("size", "all"), ranked=a.get("ranked", "all"), last=int(a.get("last", 0) or 0),
+                                      who=a.get("who", "me") or "me", start=a.get("start", ""), end=a.get("end", ""), tag=a.get("tag", "")))
+
+
+@app.get("/api/focus")
+def api_focus():
+    from . import diagnosis
+    return jsonify(diagnosis.focus_progress())
+
+
+@app.get("/api/week_report")
+def api_week_report():
+    from . import patterns
+    return jsonify(patterns.week_report(request.args.get("day", "")))
 
 
 @app.get("/api/session_shots")
@@ -240,6 +263,9 @@ def api_settings_put():
         cfg["viewing"] = [str(x)[:80] for x in (body["viewing"] or [])][:60]
     if "update_repo" in body:  # where updates come from ("owner/name" on GitHub)
         cfg["update_repo"] = str(body["update_repo"] or "").strip().strip("/")[:100]
+    if "focus" in body:  # focus goals: [{key, since}]
+        cfg["focus"] = [{"key": str(f.get("key", ""))[:40], "since": str(f.get("since", ""))[:19]}
+                        for f in (body["focus"] or []) if isinstance(f, dict) and f.get("key")][:4]
     if "pins" in body:  # stats starred on the Stats page, shown on Home
         cfg["pins"] = [str(x)[:40] for x in (body["pins"] or [])][:24]
     if "replay_retention" in body:

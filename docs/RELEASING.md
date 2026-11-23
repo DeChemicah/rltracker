@@ -18,7 +18,7 @@ GitHub repository, built from your working copy by `tools/publish.py` into `D:\R
 
 4. On GitHub: **Releases › Draft a new release**, tag `v1.0.0` (must match `VERSION`), add a few lines of notes,
    **Publish release**.
-5. Send friends the link to `INSTALL.md` in the repository.
+5. Send friends the repository link; its front page has the download link and steps.
 
 ## Every update
 
@@ -26,6 +26,8 @@ GitHub repository, built from your working copy by `tools/publish.py` into `D:\R
 2. `D:\RLTRACKER\.venv\Scripts\python D:\RLTRACKER\tools\publish.py` (copies the app and commits it in the public copy).
 3. `cd D:\RLTRACKER-public` then `git push`.
 4. On GitHub, publish a release with tag `v1.0.1` and notes on what changed. The notes are shown in the app.
+   Attach `D:\RLTRACKER-release\RLTracker.zip` (built by publish.py) to the release: friends' download link
+   `https://github.com/<you>/rltracker/releases/latest/download/RLTracker.zip` always gets the newest one.
 
 Friends then see "Update to v1.0.1" at the top of their app.
 
