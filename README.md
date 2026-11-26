@@ -3,14 +3,14 @@
 Turns the replays Rocket League saves into stats, report cards and session reports, shown in your browser.
 Everything runs and is stored on your own PC.
 
-## Install (Windows, about 2 minutes)
+## Install (Windows, about 1 minute)
 
-1. **Python 3.10 or newer** is needed. Don't have it? Get it from https://www.python.org/downloads/ and in the
-   installer **tick "Add python.exe to PATH"**.
-2. **Download RL Tracker:** https://github.com/DeChemicah/rltracker/releases/latest/download/RLTracker.zip
-3. Right-click the zip › **Extract All…**, and put the `RLTracker` folder somewhere you'll keep it (e.g. your Documents).
-4. Open the folder and double-click **`start.bat`**. The first start sets itself up (1–2 minutes), then your browser
-   opens the app at http://127.0.0.1:5177. If Windows shows "Windows protected your PC", click **More info › Run anyway**.
+Nothing else to install: the download includes its own Python.
+
+1. **Download RL Tracker:** https://github.com/DeChemicah/rltracker/releases/latest/download/RLTracker.zip (about 27 MB)
+2. Right-click the zip › **Extract All…**, and put the `RLTracker` folder somewhere you'll keep it (e.g. your Documents).
+3. Open the folder and double-click **`start.bat`**. Your browser opens the app at http://127.0.0.1:5177.
+   If Windows shows "Windows protected your PC", click **More info › Run anyway**.
 
 Next time, just double-click `start.bat` again. Updates install from inside the app (Settings › Updates).
 

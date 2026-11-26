@@ -5,13 +5,15 @@ browser at http://127.0.0.1:5177. Your games and settings stay on your PC in the
 
 ## Quick install (no commands)
 
-1. Install **Python 3.10+** from https://www.python.org/downloads/ (tick **"Add python.exe to PATH"**), if you don't have it.
-2. Download https://github.com/DeChemicah/rltracker/releases/latest/download/RLTracker.zip
-3. Right-click it › **Extract All…** to a folder you'll keep.
-4. Double-click **`start.bat`** in the `RLTracker` folder. First start takes 1–2 minutes, then the browser opens.
+The download includes its own Python (in the `python` folder), so there's nothing else to install.
+
+1. Download https://github.com/DeChemicah/rltracker/releases/latest/download/RLTracker.zip
+2. Right-click it › **Extract All…** to a folder you'll keep.
+3. Double-click **`start.bat`** in the `RLTracker` folder. The browser opens the app.
    On "Windows protected your PC", click **More info › Run anyway**.
 
-The rest of this page does the same with PowerShell commands (adds a desktop shortcut too).
+The rest of this page installs it with PowerShell commands instead (adds a desktop shortcut too). That route uses
+the Python installed on the PC.
 
 These steps are written so a person **or an AI assistant (such as Claude Code)** can follow them exactly.
 Every command is PowerShell. The commands already contain the GitHub repository the app is shared from

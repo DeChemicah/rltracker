@@ -650,7 +650,8 @@ def team(lineup: str = "", size: str = "all", ranked: str = "all") -> dict:
     }
 
 
-def records(player: str = "universal", top: int = 5, start: str = "", end: str = "") -> dict:
+def records(player: str = "universal", top: int = 5, start: str = "", end: str = "",
+            size: str = "all", ranked: str = "all", tag: str = "") -> dict:
     """Single-game bests for one player, or for everyone who's played on your
     team ("universal"), plus career numbers and team records. start/end (ISO times)
     limit it to one session's games."""
@@ -667,9 +668,15 @@ def records(player: str = "universal", top: int = 5, start: str = "", end: str =
             continue
         if start and m["played_at"] < start or end and m["played_at"] > end:
             continue
+        if tag and tag not in (m.get("tags") or []):
+            continue
         enrich(m, me)
         apply_aliases(m, aliases, me)
         if m["my"] is None:
+            continue
+        if size != "all" and m["playlist"] != size:  # the mode and ranked/casual filters
+            continue
+        if ranked == "ranked" and not m.get("ranked") or ranked == "casual" and m.get("ranked"):
             continue
         for c in m.get("columns", []):
             if c["key"] not in NON_STAT and c["key"] not in [x["key"] for x in cols]:

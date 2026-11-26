@@ -194,13 +194,13 @@ def _team(games: list, D: dict, sm: dict, start: str, end: str) -> dict:
     # 9. how the goals against happened (from the goal causes)
     from . import diagnosis as DGN
     gb = DGN.goals_breakdown([m for m in games if m.get("replay")], None)
-    fix = [c for c in gb["causes"] if c["key"] != "other" and c["goals"] >= 3 and (c["pct"] or 0) >= 18]
+    fix = [x for x in gb["causes"] if x["key"] != "other" and x["goals"] >= 3 and (x["pct"] or 0) >= 18]
     if fix:
-        c = max(fix, key=lambda c: c["goals"])
-        _find(fs, (c["pct"] or 0) * 1.6, CAUSE_TITLE.get(c["key"], c["label"]),
-              [_fact("Goals against", f"{c['goals']} of {gb['against']} ({c['pct']:.0f}%)", "down")] +
+        cz = max(fix, key=lambda x: x["goals"])
+        _find(fs, (cz["pct"] or 0) * 1.6, CAUSE_TITLE.get(cz["key"], cz["label"]),
+              [_fact("Goals against", f"{cz['goals']} of {gb['against']} ({cz['pct']:.0f}%)", "down")] +
               [_fact(p["label"], f"involved in {p['goals']}", "") for p in gb["involved"][:3] if p["goals"]],
-              f"\"{c['label']}\" was the most common reason a goal went in against you.", CAUSE_TIP.get(c["key"], ""))
+              f"\"{cz['label']}\" was the most common reason a goal went in against you.", CAUSE_TIP.get(cz["key"], ""))
 
     # 8. fading late in the session
     if n >= 6 and (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() < 20 * 3600:  # one session, not a week

@@ -386,7 +386,7 @@ async function openGame(id){
 const R = { player:'universal', si:-1, sess:null };  // si = session index (-1 = all time)
 async function renderRecords(){
   const W = gWindow(), S = W.start || W.end ? W : null;
-  const q = new URLSearchParams({player: R.player}); if (S){ q.set('start', S.start); q.set('end', S.end); }
+  const q = new URLSearchParams({player: R.player, size: state.size, ranked: state.ranked}); if (state.tag) q.set('tag', state.tag); if (S){ q.set('start', S.start); q.set('end', S.end); }
   const r = await api('/api/records?' + q);
   if (state.view !== 'records') return;
   if (S && !('range' in r)) toast('The app needs a restart for session records: close the RL Tracker window and run start.bat again');
@@ -1661,9 +1661,9 @@ async function openPlayer(key){
 
 // =================================================================== compare
 const C = { a:{type:'session', v:0}, b:{type:'session', v:1}, hist:null, sess:null,
-  mode:'players', pa:'me', pb:'', pc:'', tf:'all', n:10, from:'', to:'', si:0 };
+  mode:'players', pa:'me', pb:'', pc:'', pd:'', tf:'all', n:10, from:'', to:'', si:0 };
 const cmpModeBar = () => `<div class="filters"><div class="chips" id="cmpMode">
-    <button data-m="players" class="${C.mode==='players'?'on':''}">Players (2–3)</button>
+    <button data-m="players" class="${C.mode==='players'?'on':''}">Players (2–4)</button>
     <button data-m="periods" class="${C.mode==='periods'?'on':''}">Two time periods (you)</button></div></div>`;
 function bindCmpMode(){ document.querySelectorAll('#cmpMode button').forEach(b=>b.onclick=()=>{ C.mode=b.dataset.m; renderCompare(); }); }
 async function renderCompare(){
@@ -1709,8 +1709,8 @@ async function renderCompare(){
   document.querySelectorAll('#view [data-side]').forEach(el=>el.onchange=()=>{ const s=C[el.dataset.side];
     s[el.dataset.f]=el.value; if (el.dataset.f==='type'){ s.v = el.value==='session' ? 0 : el.value==='game' ? (mine[mine.length-1]||{}).id : ''; } renderCompare(); });
 }
-// ---- two or three players side by side
-const CP_COLORS = ['var(--blue)', 'var(--orange)', '#2fbf71'];
+// ---- two to four players side by side
+const CP_COLORS = ['var(--blue)', 'var(--orange)', '#2fbf71', '#b37cff'];
 async function renderComparePlayers(){
   const sess = C.sess.sessions || [];
   // timeframe comes from the filter bar
@@ -1719,7 +1719,8 @@ async function renderComparePlayers(){
   else if (state.tf==='session'){ C.tf = 'session'; C.si = state.si; }
   else C.tf = 'all';
   const q = new URLSearchParams({a: C.pa, b: C.pb || ''});
-  if (C.pc && C.pc !== C.pa && C.pc !== C.pb) q.set('c', C.pc);
+  if (C.pc && C.pc !== C.pa && C.pc !== C.pb){ q.set('c', C.pc);
+    if (C.pd && ![C.pa, C.pb, C.pc].includes(C.pd)) q.set('d', C.pd); }
   if (C.tf==='last') q.set('last', C.n);
   if (C.tf==='range'){ if (C.from) q.set('from', C.from); if (C.to) q.set('to', C.to); }
   if (C.tf==='session' && sess[C.si]){ q.set('start', sess[C.si].start); q.set('end', sess[C.si].end); }
@@ -1727,9 +1728,9 @@ async function renderComparePlayers(){
   if (state.view !== 'people' || PP.tab !== 'compare' || C.mode !== 'players') return;
   if (!C.pb){ C.pb = (r.players.find(p=>p.key!==C.pa)||{}).key || ''; if (C.pb) return renderComparePlayers(); }
   await rsMeta();
-  const A = r.a, B = r.b, P = [r.a, r.b, r.c].filter(Boolean), three = P.length === 3, nm = x => esc(x.label);
-  if (q.has('c') && !r.c) toast('The app needs a restart for a third player: close the RL Tracker window and run start.bat again');
-  const opt = (sel, none) => (none ? `<option value="" ${!sel?'selected':''}>+ add a third player</option>` : '') +
+  const A = r.a, B = r.b, P = [r.a, r.b, r.c, r.d].filter(Boolean), three = P.length >= 3, nm = x => esc(x.label);
+  if (q.has('c') && !r.c || q.has('d') && !r.d) toast('The app needs a restart for more players: close the RL Tracker window and run start.bat again');
+  const opt = (sel, none) => (none ? `<option value="" ${!sel?'selected':''}>+ add a ${none} player</option>` : '') +
     r.players.map(p=>`<option value="${esc(p.key)}" ${p.key===sel?'selected':''}>${esc(p.label)}${p.key==='me'?' (you)':p.account?' · your account':''} · ${p.games} g</option>`).join('');
   const tfSel = `<select class="e name" id="cpTf" style="width:auto">${[['all','All time'],['last','Last N games each'],['range','Date range'],['session','A session']].map(([v,t])=>`<option value="${v}" ${C.tf===v?'selected':''}>${t}</option>`).join('')}</select>`;
   let tfVal = '';
@@ -1739,7 +1740,8 @@ async function renderComparePlayers(){
   const picker = `<div class="card"><div class="row" style="gap:10px;flex-wrap:wrap">
       <select class="e name" id="cpA" style="width:auto">${opt(C.pa)}</select><b>vs</b>
       <select class="e name" id="cpB" style="width:auto">${opt(C.pb)}</select><b>vs</b>
-      <select class="e name" id="cpC" style="width:auto">${opt(three ? C.pc : '', true)}</select>
+      <select class="e name" id="cpC" style="width:auto">${opt(three ? C.pc : '', 'third')}</select>
+      ${three ? `<b>vs</b><select class="e name" id="cpD" style="width:auto">${opt(r.d ? C.pd : '', 'fourth')}</select>` : ''}
       <span class="hint" style="margin-left:10px">Timeframe and players' modes: set in the filter bar above (mode/ranked don't apply here).</span></div></div>`;
   const dec = k => k==='score' ? 0 : 2;
   const pctF = v => Math.round(v)+'%';
@@ -1771,14 +1773,14 @@ async function renderComparePlayers(){
   const tile = (S, i) => `<div class="card tile"><div class="label" style="color:${CP_COLORS[i]}">${nm(S)}</div><div class="val">${S.wins}–${S.losses}</div>
       <div class="sub">${S.games} games · ${pct(S.win_rate)} win rate · ${S.mvps} MVPs<br>${span(S)}</div></div>`;
   const h2hRows = (G, keys) => r.stats.map(k=>row(STAT_LABEL[k]||k, keys.map(x=>G[x][k]), dec(k))).join('');
-  const styles = [r.style_a, r.style_b, r.style_c].slice(0, P.length);
+  const styles = [r.style_a, r.style_b, r.style_c, r.style_d].slice(0, P.length);
   const styleCard = styles.every(Boolean) ? `<div class="card" style="margin-top:14px"><h3>Play style · all games</h3><div class="stylewrap">
       <div style="flex:0 0 auto;width:min(340px,100%)">${radarSvg(styles[0].labels, styles.map((st,i)=>({axes:st.axes, color:CP_COLORS[i], label:P[i].label})), 340)}</div>
       <div style="flex:1;min-width:220px"><table><tr><th>Axis</th>${P.map((S,i)=>`<th style="color:${CP_COLORS[i]}">${nm(S)}</th>`).join('')}<th class="l">What it is</th></tr>
         ${styles[0].labels.map(([ax,l])=>`<tr><td class="l">${esc(l)}</td>${styles.map(st=>`<td><b>${st.axes[ax] ?? '–'}</b><span class="hint">${st.axes[ax]!=null?ordSuffix(st.axes[ax]):''} ·${styleRaw(ax, (st.raw||{})[ax])}</span></td>`).join('')}<td class="l hint">${styleAbout(styles[0], ax)}</td></tr>`).join('')}</table>
         <div class="hint" style="margin-top:6px">Big number = percentile of every single-game performance in your games (50 = middle); small number = the player's actual average. Uses all of each player's games, not just this timeframe.</div></div></div></div>` : '';
-  const trioCard = three ? `<div class="card" style="margin-top:14px"><h3>All three on the same team · ${T3.games} game${T3.games===1?'':'s'}</h3>${T3.games ? `<div class="big-rec">${T3.wins}–${T3.losses} <span class="hint">${pct(T3.win_rate)}</span></div>
-        <table class="cmpt">${head}${h2hRows(T3, ['a','b','c'])}</table>` : '<div class="hint">Never all on the same team in this timeframe.</div>'}</div>` : '';
+  const trioCard = three ? `<div class="card" style="margin-top:14px"><h3>All ${P.length===4?'four':'three'} on the same team · ${T3.games} game${T3.games===1?'':'s'}</h3>${T3.games ? `<div class="big-rec">${T3.wins}–${T3.losses} <span class="hint">${pct(T3.win_rate)}</span></div>
+        <table class="cmpt">${head}${h2hRows(T3, ['a','b','c','d'].slice(0, P.length))}</table>` : `<div class="hint">Never all on the same team in this timeframe${P.length===4 ? ' (four teammates only happens in 4v4)' : ''}.</div>`}</div>` : '';
   const head2 = headFor([A, B]);
   const body = !P.some(S=>S.games) ? '<div class="card empty">No one picked has finished games in this timeframe.</div>' : `
     <div class="grid" style="margin-top:14px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">${P.map(tile).join('')}</div>
@@ -1803,7 +1805,8 @@ async function renderComparePlayers(){
   bindCmpMode();
   $('#cpA').onchange = e => { C.pa = e.target.value; renderComparePlayers(); };
   $('#cpB').onchange = e => { C.pb = e.target.value; renderComparePlayers(); };
-  $('#cpC').onchange = e => { C.pc = e.target.value; renderComparePlayers(); };
+  $('#cpC').onchange = e => { C.pc = e.target.value; if (!C.pc) C.pd = ''; renderComparePlayers(); };
+  if ($('#cpD')) $('#cpD').onchange = e => { C.pd = e.target.value; renderComparePlayers(); };
   if ($('#cpTf')) $('#cpTf').onchange = e => { C.tf = e.target.value; renderComparePlayers(); };
   if ($('#cpN')) $('#cpN').onchange = e => { C.n = +e.target.value; renderComparePlayers(); };
   if ($('#cpFrom')) $('#cpFrom').onchange = e => { C.from = e.target.value; renderComparePlayers(); };

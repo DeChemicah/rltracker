@@ -180,7 +180,7 @@ def api_compare_players():
     q = request.args
     return jsonify(insights.compare_players(q.get("a", "me"), q.get("b", ""), last=int(q.get("last", 0) or 0),
                                             frm=q.get("from", ""), to=q.get("to", ""), start=q.get("start", ""), end=q.get("end", ""),
-                                            c=q.get("c", "")))
+                                            c=q.get("c", ""), d=q.get("d", "")))
 
 
 @app.get("/api/player")
@@ -228,7 +228,9 @@ def api_export(fmt):
 @app.get("/api/records")
 def api_records():
     return jsonify(stats.records(player=request.args.get("player", "universal"),
-                                 start=request.args.get("start", ""), end=request.args.get("end", "")))
+                                 start=request.args.get("start", ""), end=request.args.get("end", ""),
+                                 size=request.args.get("size", "all"), ranked=request.args.get("ranked", "all"),
+                                 tag=request.args.get("tag", "")))
 
 
 @app.get("/api/history")

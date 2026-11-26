@@ -1596,7 +1596,7 @@ def profile(key: str) -> dict | None:
 
 # ---------------------------------------------------------------- player vs player
 def compare_players(a: str, b: str, last: int = 0, frm: str = "", to: str = "",
-                    start: str = "", end: str = "", c: str = "") -> dict:
+                    start: str = "", end: str = "", c: str = "", d: str = "") -> dict:
     """Two (or three, with c) players side by side over the same timeframe.
 
     Timeframe: everything, each player's last N games (last), a date range
@@ -1682,14 +1682,23 @@ def compare_players(a: str, b: str, last: int = 0, frm: str = "", to: str = "",
     }
     out = {"a": SA, "b": SB, "h2h": h2h, "stats": TRACKED_STATS, "players": viewers, "rs_meta": RS.meta(),
            "style_a": style_for(a), "style_b": style_for(b)}
-    if c and c not in (a, b):  # optional third player
-        SC = side(c)
-        trio = [mid for mid in together if mid in SC["_ids"] and SC["_ids"][mid][0] == SA["_ids"][mid][0]]
+    extra = {}  # optional third and fourth players (c, d)
+    if c and c not in (a, b):
+        extra["c"] = c
+    if d and d not in (a, b, c) and extra:
+        extra["d"] = d
+    if extra:
+        sides = {k: side(v) for k, v in extra.items()}
+        # games where everyone picked was on the same team ("trio" keeps its name for 3 or 4 players)
+        trio = [mid for mid in together
+                if all(mid in S["_ids"] and S["_ids"][mid][0] == SA["_ids"][mid][0] for S in sides.values())]
         w3 = sum(SA["_ids"][mid][2] == "W" for mid in trio)
         h2h["trio"] = {"games": len(trio), "wins": w3, "losses": len(trio) - w3, "win_rate": _rate(w3, len(trio)),
-                       "a": h2h_avg(trio, SA), "b": h2h_avg(trio, SB), "c": h2h_avg(trio, SC)}
-        SC.pop("_ids")
-        out.update(c=SC, style_c=style_for(c))
+                       "a": h2h_avg(trio, SA), "b": h2h_avg(trio, SB),
+                       **{k: h2h_avg(trio, S) for k, S in sides.items()}}
+        for k, S in sides.items():
+            S.pop("_ids")
+            out.update({k: S, f"style_{k}": style_for(extra[k])})
     for S in (SA, SB):
         S.pop("_ids")
     return out
